@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+.python-version
+# IDEs and editors
+.idea
+.vscod# IDEs
+.idea
+.vscode
+#Jupyter Notebook checkpoints
+.ipynb_checkpoints
+# Cache and log files
+*.log
+# OS generated files
+.DS_Store
