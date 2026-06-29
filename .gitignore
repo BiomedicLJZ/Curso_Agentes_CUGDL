@@ -11,10 +11,11 @@ wheels/
 .env
 .python-version
 # IDEs and editors
-.idea
+.cadence
 .vscod# IDEs
 .idea
 .vscode
+.omc
 #Jupyter Notebook checkpoints
 .ipynb_checkpoints
 # Cache and log files
