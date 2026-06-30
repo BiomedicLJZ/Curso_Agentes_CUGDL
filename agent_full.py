@@ -1058,37 +1058,37 @@ def _(
         analista = llm_respaldo if llm_respaldo else llm_principal
         if not analista:
             return []
-
+        
         prompt_reflexion = f"""
         Analiza este intercambio y extrae SOLO información personal duradera sobre el
         usuario que valga la pena recordar a largo plazo.
-
+    
         REGLAS:
         - Solo hechos objetivos, preferencias claras, proyectos activos o metas explícitas.
         - NO incluyas saludos, preguntas genéricas ni información transitoria.
         - Si la información actualiza o contradice algo previo → usa 'update' o 'delete'.
         - Si no hay nada relevante → devuelve operations: [].
-
+    
         Usuario: {texto_usuario}
         Asistente: {texto_agente}
         """
-
+        
         cambios: list[str] = []
         try:
             llm_estructurado = analista.with_structured_output(SalidaReflexion)
             resultado = llm_estructurado.invoke(prompt_reflexion)
-
+        
             for op in resultado.operations:
                 clave_uuid = uuid.uuid4().hex[:12]
                 ts = datetime.datetime.now().isoformat(timespec="seconds")
-
+            
                 if op.action == "add":
                     almacen_memoria.put(
                         ESPACIO_MEMORIA, clave_uuid,
                         {"text": op.content, "kind": op.kind, "ts": ts},
                     )
                     cambios.append(f"✅ **Añadido [{op.kind}]:** {op.content}")
-
+            
                 elif op.action in ("update", "delete") and op.old_content_query:
                     if semantica_activa:
                         hits = almacen_memoria.search(
@@ -1115,7 +1115,7 @@ def _(
                         else:
                             clave_antigua = None
                             texto_antiguo = ""
-
+            
                     if clave_antigua:
                         almacen_memoria.delete(ESPACIO_MEMORIA, clave_antigua)
                         if op.action == "update":
@@ -1134,10 +1134,10 @@ def _(
                             {"text": op.content, "kind": op.kind, "ts": ts},
                         )
                         cambios.append(f"✅ **Añadido (sin reemplazar):** {op.content}")
-
+                    
         except Exception:
             pass
-
+        
         return cambios
 
     # ── Función principal de ejecución del agente ─────────────────────────────────────
