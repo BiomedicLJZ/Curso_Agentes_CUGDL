@@ -6,6 +6,8 @@
 #     "langgraph>=1.0",
 #     "langgraph-checkpoint-sqlite",
 #     "langchain-nvidia-ai-endpoints",
+#     "python-dotenv",         # carga NVIDIA_API_KEY/TAVILY_API_KEY desde un archivo .env
+#     "tavily-python",         # cliente de las tools de busqueda web (search/research/extract)
 #     "numpy",
 #     "duckdb==1.5.4",
 #     "sqlglot==30.12.0",
@@ -51,6 +53,28 @@
 #     intercambio y los persiste en silencio, sin que el usuario lo pida.
 #     Complementa — no reemplaza — las llamadas a `recordar` del propio agente.
 #
+# ── HERRAMIENTAS (TOOLS) DEL AGENTE ────────────────────────────────────────────
+#
+#   Memoria (operan sobre el store de largo plazo):
+#     · recordar(texto, categoria)  → graba un hecho duradero.   [ESCRITURA]
+#     · evocar(consulta, modo)      → busca recuerdos.           [LECTURA]
+#     · olvidar(consulta)           → borra el recuerdo que más coincide. [DESTRUCTIVA]
+#   Web (vía API de Tavily, requieren TAVILY_API_KEY):
+#     · search(query)        → búsqueda en Internet.
+#     · research(query)      → investigación más profunda.
+#     · extract_webpage(url) → extrae el contenido de una página.
+#
+# ── PIPELINE DE MIDDLEWARES (envuelven al agente; orden = afuera→adentro) ───────
+#
+#   inyectar_memoria (custom, @dynamic_prompt) · SIEMPRE primero:
+#     inyecta los recuerdos relevantes en el system prompt antes de cada turno.
+#   Resto (activables desde el menú interactivo `middleware_menu`):
+#     summarization · context_editing · human_in_loop · model_call_limit ·
+#     tool_call_limit · tool_retry · model_retry · model_fallback ·
+#     todo_planning · tool_selector · pii
+#   Nota: `human_in_loop` PAUSA el grafo esperando aprobación humana; viene
+#   apagado por defecto porque la UI de chat de marimo no puede reanudarlo.
+#
 # ──────────────────────────────────────────────────────────────────────────────
 
 import marimo
@@ -70,6 +94,13 @@ def _():
 def _(mo):
     mo.md(r"""
     # 🧠 El Cerebro en el Frasco
+    Un agente `create_agent` (LangChain v1) movido por **NVIDIA NIM**, con
+    memoria **persistente en tu disco** — corto plazo (hilo actual) vía
+    `SqliteSaver`, y largo plazo (entre todos los chats) vía un *store*
+    SQLite propio con búsqueda **semántica + por palabra clave + por recencia**.
+
+    Edita los parámetros en la celda **CONFIG**, asegúrate de tener
+    `NVIDIA_API_KEY`, y baja al chat.# 🧠 El Cerebro en el Frasco
     Un agente `create_agent` (LangChain v1) movido por **NVIDIA NIM**, con
     memoria **persistente en tu disco** — corto plazo (hilo actual) vía
     `SqliteSaver`, y largo plazo (entre todos los chats) vía un *store*
@@ -130,7 +161,7 @@ def _(Path, os):
 
 
 @app.cell
-def _(os):
+def _():
     MIDDLEWARE_TOGGLES = {
         "summarization": True,  # resume historiales largos
         "human_in_loop": True,
@@ -144,7 +175,11 @@ def _(os):
         "tool_selector": False,  # útil sólo con MUCHAS tools; aquí son 3
         "pii": False,  # OFF: bloquearía la info personal del usuario
     }
+    return
 
+
+@app.cell
+def _(os):
     NVIDIA_KEY_PRESENT = os.environ.get("NVIDIA_API_KEY").startswith("nvapi")
     return (NVIDIA_KEY_PRESENT,)
 
@@ -200,15 +235,19 @@ def _(mo):
     return (middleware_menu,)
 
 
-app._unparsable_cell(
-    r"""
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ### ⚙️ Agent Middleware Settings
     *Configure the active middlewares for the current agent session.*
+    """)
+    return
 
-    {middleware_menu}
-    """,
-    name="_"
-)
+
+@app.cell
+def _(middleware_menu):
+    middleware_menu
+    return
 
 
 @app.cell
@@ -729,7 +768,7 @@ def _(
                 PIIMiddleware(
                     "email",
                     strategy="redact",
-                    apply_to_tools=True,
+                    apply_to_tool_results=True,
                     apply_to_input=True,
                 )
             )
@@ -741,12 +780,14 @@ def _(
                     detector=[r"[0-9]{3}-[0-9]{3}-[0-9]{4}", r"[0-9]{10}"],
                     strategy="mask",
                     apply_to_input=True,
-                    apply_to_tools=True,
+                    apply_to_tool_results=True,
                 )
             )
             middleware.append(
                 PIIMiddleware(
                     "ssn",
+                    detector=[r"\d{3}-\d{2}-\d{4}"],
+                    strategy="mask",
                 )
             )
             enabled.append("pii(email,url)")
@@ -811,13 +852,13 @@ def _(
         analista = fallback_llm if fallback_llm else llm
         if not analista:
             return []
-            
+
         prompt = f"""
         Analiza la siguiente interacción.
         Extrae nueva información personal duradera sobre el usuario que deba ser recordada (preferencias, contexto, hechos, proyectos).
         Si la información actualiza o contradice algo que el usuario dijo antes, genera 'update' o 'delete'. Si es nueva, 'add'.
         Si no hay información relevante para recordar a largo plazo, devuelve una lista vacía en operations.
-        
+
         Usuario: {user_text}
         Asistente: {agent_text}
         """
@@ -826,7 +867,7 @@ def _(
             # Utilizamos with_structured_output para que el LLM devuelva un JSON validado por Pydantic
             structured_llm = analista.with_structured_output(ReflectionOutput)
             result = structured_llm.invoke(prompt)
-            
+
             for op in result.operations:
                 if op.action == "add":
                     key = uuid.uuid4().hex[:12]
@@ -836,7 +877,7 @@ def _(
                         {"text": op.content, "kind": op.kind, "ts": datetime.datetime.now().isoformat(timespec="seconds")}
                     )
                     cambios.append(f"✅ **Añadido:** {op.content} *(Categoría: {op.kind})*")
-                
+
                 elif op.action in ["update", "delete"] and op.old_content_query:
                     hits = []
                     if semantic_ok:
@@ -848,7 +889,7 @@ def _(
                                 if it.value.get("text") == kw_hits[0].get("text"):
                                     hits = [it]
                                     break
-                    
+
                     if hits:
                         old_key = hits[0].key
                         old_text = hits[0].value.get("text", "")
@@ -875,7 +916,7 @@ def _(
         except Exception:
             # Los errores de reflexión son silenciosos para no romper el flujo del chat principal
             pass
-            
+
         return cambios
 
     def run_agent(messages, config=None):
@@ -886,31 +927,31 @@ def _(
                 "pero la memoria a largo plazo ya está lista en disco."
             )
             return
-            
+
         try:
             user_text = messages[-1].content
             cfg = {"configurable": {"thread_id": THREAD_ID, "user_id": USER_ID}}
-            
+
             # 1. Ejecución principal del agente (Middlewares activos, invoca herramientas si es necesario)
             out = agent.invoke(
                 {"messages": [{"role": "user", "content": user_text}]}, cfg
             )
             content = out["messages"][-1].content
             content_str = content if isinstance(content, str) else str(content)
-            
+
             # 2. Mostrar respuesta inicial y aviso interactivo (aprovechando yield en Marimo UI)
             yield content_str + "\n\n*(🧠 Analizando la conversación para actualizar la memoria de forma autónoma...)*"
-            
+
             # 3. Ejecutar Reflexión Autónoma (Capa 3) post-turno sin herramientas explícitas
             cambios = _reflexion_autonoma(user_text, content_str)
-            
+
             # 4. Finalizar la ejecución mostrando las actualizaciones a la UI si existieron (Explicabilidad)
             if cambios:
                 explicacion_cambios = "\n".join(cambios)
                 yield content_str + f"\n\n---\n**🧠 Memoria Autónoma Actualizada:**\n{explicacion_cambios}"
             else:
                 yield content_str
-                
+
         except Exception as e:
             yield f"❌ Error al invocar el agente:\n```\n{e!r}\n```"
 
@@ -1072,11 +1113,6 @@ def _(MEM_NS, mo, store):
             else mo.md("_(vacío — aún no hay recuerdos)_"),
         ]
     )
-    return
-
-
-@app.cell
-def _():
     return
 
 

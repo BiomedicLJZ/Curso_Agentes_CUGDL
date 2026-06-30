@@ -20,4 +20,5 @@ dependencies = [
     "rich>=15.0.0",
     "tavily-python>=0.7.26",
     "ty>=0.0.55",
+    "websockets>=15.0.1",
 ]

@@ -22,6 +22,7 @@ dependencies = [
     { name = "rich" },
     { name = "tavily-python" },
     { name = "ty" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -41,6 +42,7 @@ requires-dist = [
     { name = "rich", specifier = ">=15.0.0" },
     { name = "tavily-python", specifier = ">=0.7.26" },
     { name = "ty", specifier = ">=0.0.55" },
+    { name = "websockets", specifier = ">=15.0.1" },
 ]
 
 [[package]]
