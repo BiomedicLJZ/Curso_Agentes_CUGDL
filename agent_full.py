@@ -166,7 +166,6 @@ def _(mo):
 
 @app.cell
 def _():
-    # ── Stdlib ────────────────────────────────────────────────────────────────────────
     import os
     import sqlite3
     import json
@@ -204,6 +203,7 @@ def _():
     # ── Integración NVIDIA (opcional) ────────────────────────────────────────────────
     try:
         from langchain_nvidia_ai_endpoints import ChatNVIDIA, NVIDIAEmbeddings
+
         PAQUETE_NVIDIA = True
     except ImportError:
         PAQUETE_NVIDIA = False
@@ -238,7 +238,6 @@ def _():
         ToolRetryMiddleware,
         create_agent,
         datetime,
-        dynamic_prompt,
         json,
         np,
         os,
@@ -250,7 +249,6 @@ def _():
 
 @app.cell
 def _(Path, os):
-    # Verificación de la clave de API NVIDIA
     PRESENCIA_API_NVIDIA = bool(
         os.environ.get("NVIDIA_API_KEY", "").startswith("nvapi")
     )
@@ -262,9 +260,7 @@ def _(Path, os):
     MODELO_RAZONAMIENTO = os.environ.get(
         "NIM_FALLBACK", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
     )
-    MODELO_EMBEDDINGS = os.environ.get(
-        "NIM_EMBED", "nvidia/nv-embedqa-e5-v5"
-    )
+    MODELO_EMBEDDINGS = os.environ.get("NIM_EMBED", "nvidia/nv-embedqa-e5-v5")
 
     # ── Identidad del usuario y rutas de persistencia ────────────────────────────────
     ID_USUARIO = os.environ.get("CEREBRO_USER", "usuario_principal")
@@ -275,8 +271,12 @@ def _(Path, os):
     DIRECTORIO_MEMORIA.mkdir(parents=True, exist_ok=True)
 
     # Ruta absoluta → nunca depende del cwd (causa #1 de "no me guardó nada" en Windows)
-    RUTA_BD_LARGO_PLAZO = str((DIRECTORIO_MEMORIA / "memorias_largo_plazo.db").resolve())
-    RUTA_BD_CORTO_PLAZO = str((DIRECTORIO_MEMORIA / "hilos_corto_plazo.db").resolve())
+    RUTA_BD_LARGO_PLAZO = str(
+        (DIRECTORIO_MEMORIA / "memorias_largo_plazo.db").resolve()
+    )
+    RUTA_BD_CORTO_PLAZO = str(
+        (DIRECTORIO_MEMORIA / "hilos_corto_plazo.db").resolve()
+    )
     return (
         ID_USUARIO,
         MODELO_EMBEDDINGS,
@@ -304,19 +304,31 @@ def _(mo):
 @app.cell
 def _(mo):
     ui_temperatura = mo.ui.slider(
-        start=0.0, stop=1.0, step=0.05, value=0.6,
+        start=0.0,
+        stop=1.0,
+        step=0.05,
+        value=0.6,
         label="**Temperatura** — Creatividad / aleatoriedad del modelo",
     )
     ui_top_p = mo.ui.slider(
-        start=0.1, stop=1.0, step=0.05, value=0.95,
+        start=0.1,
+        stop=1.0,
+        step=0.05,
+        value=0.95,
         label="**Top-P** — Diversidad del vocabulario (nucleus sampling)",
     )
     ui_max_tokens = mo.ui.slider(
-        start=256, stop=65536, step=256, value=16384,
+        start=256,
+        stop=65536,
+        step=256,
+        value=16384,
         label="**Máximo de tokens** — Longitud máxima de la respuesta",
     )
     ui_reason_budget = mo.ui.slider(
-        start=1024, stop=32768, step=256, value=8192,
+        start=1024,
+        stop=32768,
+        step=256,
+        value=8192,
         label="**Tokens de pensamiento** — Presupuesto para razonamiento interno (CoT)",
     )
     ui_razonamiento = mo.ui.switch(
@@ -334,52 +346,54 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    menu_middlewares = mo.ui.dictionary({
-        "resumen_conversacion": mo.ui.switch(
-            value=True,
-            label="📄 **Resumen Automático** — Condensa historiales largos para no agotar el contexto",
-        ),
-        "modelo_respaldo": mo.ui.switch(
-            value=True,
-            label="🔄 **Modelo de Respaldo (Fallback)** — Redirige al modelo secundario si el principal falla",
-        ),
-        "edicion_contexto": mo.ui.switch(
-            value=True,
-            label="✂️ **Edición de Contexto** — Poda resultados viejos de herramientas para liberar tokens",
-        ),
-        "humano_en_bucle": mo.ui.switch(
-            value=False,
-            label="🙋 **Humano en el Bucle** — Pausa y pide aprobación antes de acciones críticas",
-        ),
-        "limite_llamadas_modelo": mo.ui.switch(
-            value=True,
-            label="🛑 **Límite: Llamadas al Modelo** — Previene bucles infinitos (máx. 60/hilo, 25/run)",
-        ),
-        "limite_llamadas_herramienta": mo.ui.switch(
-            value=True,
-            label="🛑 **Límite: Herramientas** — Tope de seguridad en invocaciones de tools (máx. 80/hilo)",
-        ),
-        "reintento_herramienta": mo.ui.switch(
-            value=True,
-            label="♻️ **Reintento de Herramienta** — Reintenta tools que lanzan excepción (máx. 2 veces)",
-        ),
-        "reintento_modelo": mo.ui.switch(
-            value=True,
-            label="♻️ **Reintento del Modelo** — Reintenta el LLM ante errores de red o timeouts",
-        ),
-        "planificacion_tareas": mo.ui.switch(
-            value=True,
-            label="📋 **Planificación de Tareas (To-Do)** — Fuerza al modelo a estructurar pasos antes de actuar",
-        ),
-        "selector_herramientas": mo.ui.switch(
-            value=False,
-            label="🔍 **Selector Dinámico de Herramientas** — Filtra tools por relevancia (útil con >10 tools)",
-        ),
-        "censura_datos_personales": mo.ui.switch(
-            value=False,
-            label="🔒 **Censura PII** — Detecta y enmascara email, URL, IP, teléfono y NSS",
-        ),
-    })
+    menu_middlewares = mo.ui.dictionary(
+        {
+            "resumen_conversacion": mo.ui.switch(
+                value=True,
+                label="📄 **Resumen Automático** — Condensa historiales largos para no agotar el contexto",
+            ),
+            "modelo_respaldo": mo.ui.switch(
+                value=True,
+                label="🔄 **Modelo de Respaldo (Fallback)** — Redirige al modelo secundario si el principal falla",
+            ),
+            "edicion_contexto": mo.ui.switch(
+                value=True,
+                label="✂️ **Edición de Contexto** — Poda resultados viejos de herramientas para liberar tokens",
+            ),
+            "humano_en_bucle": mo.ui.switch(
+                value=False,
+                label="🙋 **Humano en el Bucle** — Pausa y pide aprobación antes de acciones críticas",
+            ),
+            "limite_llamadas_modelo": mo.ui.switch(
+                value=True,
+                label="🛑 **Límite: Llamadas al Modelo** — Previene bucles infinitos (máx. 60/hilo, 25/run)",
+            ),
+            "limite_llamadas_herramienta": mo.ui.switch(
+                value=True,
+                label="🛑 **Límite: Herramientas** — Tope de seguridad en invocaciones de tools (máx. 80/hilo)",
+            ),
+            "reintento_herramienta": mo.ui.switch(
+                value=True,
+                label="♻️ **Reintento de Herramienta** — Reintenta tools que lanzan excepción (máx. 2 veces)",
+            ),
+            "reintento_modelo": mo.ui.switch(
+                value=True,
+                label="♻️ **Reintento del Modelo** — Reintenta el LLM ante errores de red o timeouts",
+            ),
+            "planificacion_tareas": mo.ui.switch(
+                value=True,
+                label="📋 **Planificación de Tareas (To-Do)** — Fuerza al modelo a estructurar pasos antes de actuar",
+            ),
+            "selector_herramientas": mo.ui.switch(
+                value=False,
+                label="🔍 **Selector Dinámico de Herramientas** — Filtra tools por relevancia (útil con >10 tools)",
+            ),
+            "censura_datos_personales": mo.ui.switch(
+                value=False,
+                label="🔒 **Censura PII** — Detecta y enmascara email, URL, IP, teléfono y NSS",
+            ),
+        }
+    )
     return (menu_middlewares,)
 
 
@@ -432,7 +446,9 @@ def _(InMemoryStore, Item, PutOp, json, np, sqlite3):
         def __init__(self, ruta_bd: str, *, index=None):
             super().__init__(index=index)
             self._ruta_bd = str(ruta_bd)
-            self._conexion = sqlite3.connect(self._ruta_bd, check_same_thread=False)
+            self._conexion = sqlite3.connect(
+                self._ruta_bd, check_same_thread=False
+            )
             self._conexion.execute("PRAGMA journal_mode=WAL;")
             self._inicializar_esquema()
             self._cargar_datos()
@@ -467,7 +483,13 @@ def _(InMemoryStore, Item, PutOp, json, np, sqlite3):
 
         def _cargar_datos(self):
             """Carga ítems y vectores desde SQLite al InMemoryStore en RAM al iniciar."""
-            for ns_s, clave, valor, creado, actualizado in self._conexion.execute(
+            for (
+                ns_s,
+                clave,
+                valor,
+                creado,
+                actualizado,
+            ) in self._conexion.execute(
                 "SELECT namespace,clave,valor,creado_el,actualizado_el FROM store_items"
             ):
                 ns = self._str_a_ns(ns_s)
@@ -482,9 +504,9 @@ def _(InMemoryStore, Item, PutOp, json, np, sqlite3):
                 "SELECT namespace,clave,ruta,vector FROM store_vectores"
             ):
                 ns = self._str_a_ns(ns_s)
-                self._vectors[ns][clave][ruta] = (
-                    np.frombuffer(blob, dtype=np.float32).tolist()
-                )
+                self._vectors[ns][clave][ruta] = np.frombuffer(
+                    blob, dtype=np.float32
+                ).tolist()
 
         def _persistir(self, operaciones):
             """Sincroniza a SQLite las operaciones ya aplicadas en RAM."""
@@ -508,8 +530,13 @@ def _(InMemoryStore, Item, PutOp, json, np, sqlite3):
                 item = self._data[op.namespace][op.key]
                 c.execute(
                     "INSERT OR REPLACE INTO store_items VALUES(?,?,?,?,?)",
-                    (ns_s, op.key, json.dumps(item.value),
-                     str(item.created_at), str(item.updated_at)),
+                    (
+                        ns_s,
+                        op.key,
+                        json.dumps(item.value),
+                        str(item.created_at),
+                        str(item.updated_at),
+                    ),
                 )
                 c.execute(
                     "DELETE FROM store_vectores WHERE namespace=? AND clave=?",
@@ -520,15 +547,19 @@ def _(InMemoryStore, Item, PutOp, json, np, sqlite3):
                 ):
                     c.execute(
                         "INSERT OR REPLACE INTO store_vectores VALUES(?,?,?,?)",
-                        (ns_s, op.key, ruta,
-                         np.asarray(vector, dtype=np.float32).tobytes()),
+                        (
+                            ns_s,
+                            op.key,
+                            ruta,
+                            np.asarray(vector, dtype=np.float32).tobytes(),
+                        ),
                     )
             c.commit()
 
         def batch(self, ops):
             ops = list(ops)
-            res = super().batch(ops)   # aplica en RAM + genera embeddings
-            self._persistir(ops)       # sincroniza a disco
+            res = super().batch(ops)  # aplica en RAM + genera embeddings
+            self._persistir(ops)  # sincroniza a disco
             return res
 
         async def abatch(self, ops):
@@ -548,7 +579,9 @@ def _(InMemoryStore, Item, PutOp, json, np, sqlite3):
             ).fetchall()
             return [json.loads(v) for (v,) in filas]
 
-        def palabra_clave(self, namespace: tuple, termino: str, limite: int = 10) -> list[dict]:
+        def palabra_clave(
+            self, namespace: tuple, termino: str, limite: int = 10
+        ) -> list[dict]:
             """Búsqueda LIKE sobre el valor JSON serializado (case-insensitive)."""
             filas = self._conexion.execute(
                 "SELECT valor FROM store_items "
@@ -578,8 +611,12 @@ def _(
 
     if PAQUETE_NVIDIA and PRESENCIA_API_NVIDIA:
         try:
-            incrustador = NVIDIAEmbeddings(model=MODELO_EMBEDDINGS, truncate="END")
-            DIMENSIONES_EMB = len(incrustador.embed_query("sonda de dimensiones"))
+            incrustador = NVIDIAEmbeddings(
+                model=MODELO_EMBEDDINGS, truncate="END"
+            )
+            DIMENSIONES_EMB = len(
+                incrustador.embed_query("sonda de dimensiones")
+            )
             semantica_activa = True
         except Exception:
             semantica_activa = False
@@ -599,7 +636,7 @@ def _(
 def _(RUTA_BD_CORTO_PLAZO, SqliteSaver, sqlite3):
     _conexion_cp = sqlite3.connect(RUTA_BD_CORTO_PLAZO, check_same_thread=False)
     gestor_puntos_control = SqliteSaver(_conexion_cp)
-    gestor_puntos_control.setup()  # crea tablas internas de LangGraph si no existen
+    gestor_puntos_control.setup()
     return (gestor_puntos_control,)
 
 
@@ -623,8 +660,8 @@ def _(
     if PAQUETE_NVIDIA and PRESENCIA_API_NVIDIA:
         _params = {
             "temperature": ui_temperatura.value,
-            "top_p":       ui_top_p.value,
-            "max_tokens":  ui_max_tokens.value,
+            "top_p": ui_top_p.value,
+            "max_tokens": ui_max_tokens.value,
         }
         _thinking = {"enable_thinking": ui_razonamiento.value}
 
@@ -648,7 +685,9 @@ def _(ESPACIO_MEMORIA, almacen_memoria, semantica_activa):
         """Extrae el último mensaje del usuario de la lista del agente."""
         for m in reversed(mensajes):
             if m.__class__.__name__ == "HumanMessage":
-                return m.content if isinstance(m.content, str) else str(m.content)
+                return (
+                    m.content if isinstance(m.content, str) else str(m.content)
+                )
         return ""
 
     def mezclar_recuerdos(
@@ -677,7 +716,7 @@ def _(ESPACIO_MEMORIA, almacen_memoria, semantica_activa):
 
         return textos
 
-    return mezclar_recuerdos, ultimo_texto_usuario
+    return (mezclar_recuerdos,)
 
 
 @app.cell
@@ -689,7 +728,6 @@ def _(
     tool,
     uuid,
 ):
-    @tool
     def recordar(texto: str, categoria: str = "general") -> str:
         """Almacena un recuerdo DURADERO sobre el usuario en la base de datos de largo plazo.
         Úsalo cuando aprendas algo relevante que deba persistir en futuras conversaciones:
@@ -702,7 +740,7 @@ def _(
             {
                 "text": texto,
                 "kind": categoria,
-                "ts":   datetime.datetime.now().isoformat(timespec="seconds"),
+                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             },
         )
         return f"🔒 Recuerdo sellado [{categoria}]: {texto}"
@@ -717,7 +755,9 @@ def _(
         if modo == "reciente":
             valores = almacen_memoria.recientes(ESPACIO_MEMORIA, limite)
         elif modo == "palabra_clave":
-            valores = almacen_memoria.palabra_clave(ESPACIO_MEMORIA, consulta, limite)
+            valores = almacen_memoria.palabra_clave(
+                ESPACIO_MEMORIA, consulta, limite
+            )
         else:
             if not semantica_activa:
                 return (
@@ -744,16 +784,22 @@ def _(
         Úsalo cuando el usuario pida explícitamente olvidar algo,
         o cuando detectes que un hecho guardado ya es incorrecto o desactualizado."""
         if not semantica_activa:
-            coincidencias = almacen_memoria.palabra_clave(ESPACIO_MEMORIA, consulta, 1)
+            coincidencias = almacen_memoria.palabra_clave(
+                ESPACIO_MEMORIA, consulta, 1
+            )
             if not coincidencias:
                 return "No encontré ningún recuerdo que coincida."
-            for clave, item in list(almacen_memoria._data.get(ESPACIO_MEMORIA, {}).items()):
+            for clave, item in list(
+                almacen_memoria._data.get(ESPACIO_MEMORIA, {}).items()
+            ):
                 if item.value.get("text") == coincidencias[0].get("text"):
                     almacen_memoria.delete(ESPACIO_MEMORIA, clave)
                     return f"🗑️ Olvidado: {coincidencias[0].get('text', '')}"
             return "No pude localizar la clave del recuerdo para eliminarlo."
 
-        resultados = almacen_memoria.search(ESPACIO_MEMORIA, query=consulta, limit=1)
+        resultados = almacen_memoria.search(
+            ESPACIO_MEMORIA, query=consulta, limit=1
+        )
         if not resultados:
             return "No encontré ningún recuerdo que coincida."
         almacen_memoria.delete(ESPACIO_MEMORIA, resultados[0].key)
@@ -764,13 +810,13 @@ def _(
 
 @app.cell
 def _(evocar, olvidar, os, recordar, tool):
-    @tool
     def buscar_en_red(consulta: str) -> str:
         """Realiza una búsqueda rápida en internet usando Tavily.
         Devuelve hasta 5 resultados relevantes con título, URL y fragmento.
         Úsalo para preguntas factuales actuales que no estén en tu conocimiento base."""
         try:
             from tavily import TavilyClient
+
             cliente = TavilyClient(os.getenv("TAVILY_API_KEY"))
             return str(cliente.search(consulta, max_results=5, language="es"))
         except Exception as e:
@@ -783,6 +829,7 @@ def _(evocar, olvidar, os, recordar, tool):
         Úsala para temas complejos que requieren síntesis de múltiples fuentes."""
         try:
             from tavily import TavilyClient
+
             cliente = TavilyClient(os.getenv("TAVILY_API_KEY"))
             return str(cliente.research(consulta))
         except Exception as e:
@@ -794,50 +841,91 @@ def _(evocar, olvidar, os, recordar, tool):
         Úsalo cuando el usuario proporcione una URL y quiera que analices su contenido."""
         try:
             from tavily import TavilyClient
+
             cliente = TavilyClient(os.getenv("TAVILY_API_KEY"))
             return str(cliente.extract(url))
         except Exception as e:
             return f"Error al extraer página: {e}"
 
     herramientas_totales = [
-        recordar, evocar, olvidar,
-        buscar_en_red, investigar_a_fondo, extraer_pagina_web,
+        recordar,
+        evocar,
+        olvidar,
+        buscar_en_red,
+        investigar_a_fondo,
+        extraer_pagina_web,
     ]
     return (herramientas_totales,)
 
 
-@app.cell
-def _(ID_USUARIO, dynamic_prompt, mezclar_recuerdos, ultimo_texto_usuario):
+app._unparsable_cell(
+    """
     PERSONAJE_BASE = (
-        "Eres el Cerebro en el Frasco: un asistente lúcido, analítico y con memoria "
-        "persistente. Hablas en el idioma del usuario (español o inglés según el contexto), "
-        "con un tono directo pero cálido. No repites frases de cortesía vacías. "
-        "Cuando aprendas algo nuevo y duradero sobre el usuario, llama a `recordar`."
+        \"Eres el Cerebro en el Frasco: un asistente lúcido, analítico y con memoria \"
+        \"persistente. Hablas en el idioma del usuario (español o inglés según el contexto), \"
+        \"con un tono directo pero cálido. No repites frases de cortesía vacías. \"
+        \"Cuando aprendas algo nuevo y duradero sobre el usuario, llama a `recordar`.\"
     )
 
     @dynamic_prompt
     def inyectar_memoria_dinamica(peticion) -> str:
-        """Construye el system prompt inyectando los recuerdos más relevantes."""
-        consulta = ultimo_texto_usuario(peticion.messages) or ID_USUARIO
+        \"\"\"Construye el system prompt inyectando los recuerdos más relevantes.\"\"\"
+        consulta = ultimo_texto_usuario(import urllib.request
+    import urllib.parse
+    import xml.etree.ElementTree as ET
+    from langchain_core.tools import tool
+
+    @tool
+    def search_arxiv(query: str, max_results: int = 3) -> str:
+        \"\"\"
+        Searches the arXiv database for scientific and academic papers.
+        Use this tool to find research papers, authors, or abstracts.
+    
+        Args:
+            query: The search term (e.g., 'machine learning', 'quantum physics').
+            max_results: The maximum number of papers to return.
+        \"\"\"
+        # Format the URL with the query
+        safe_query = urllib.parse.quote(query)
+        url = f\"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results={max_results}\"
+    
+        try:
+            with urllib.request.urlopen(url) as response:
+                root = ET.fromstring(response.read())
+                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+            
+                papers = []
+                for entry in root.findall('atom:entry', ns):
+                    title = entry.find('atom:title', ns).text.replace('\\n', ' ').strip()
+                    summary = entry.find('atom:summary', ns).text.replace('\\n', ' ').strip()
+                
+                    # We return a simple formatted string for the LLM to read
+                    papers.append(f\"Title: {title}\\nSummary: {summary[:200]}...\\n---\")
+                
+                return \"\\n\".join(papers) if papers else \"No papers found for this query.\"
+            
+        except Exception as e:
+            return f\"Tool Error: {str(e)}\") or ID_USUARIO
         recuerdos = mezclar_recuerdos(consulta)
 
         if recuerdos:
-            bloque = "\n".join(f"  - {t}" for t in recuerdos)
+            bloque = \"\\n\".join(f\"  - {t}\" for t in recuerdos)
             return (
-                f"{PERSONAJE_BASE}\n\n"
-                f"## Lo que recuerdas de {ID_USUARIO} (memoria persistente):\n"
-                f"{bloque}\n\n"
-                "Usa estos recuerdos con naturalidad, sin anunciarlos explícitamente. "
-                "Si detectas información desactualizada, usa `olvidar` + `recordar`."
+                f\"{PERSONAJE_BASE}\\n\\n\"
+                f\"## Lo que recuerdas de {ID_USUARIO} (memoria persistente):\\n\"
+                f\"{bloque}\\n\\n\"
+                \"Usa estos recuerdos con naturalidad, sin anunciarlos explícitamente. \"
+                \"Si detectas información desactualizada, usa `olvidar` + `recordar`.\"
             )
 
         return (
-            f"{PERSONAJE_BASE}\n\n"
-            f"Aún no tienes recuerdos de {ID_USUARIO}. "
-            "Cuando aprendas algo duradero en esta conversación, llama a `recordar`."
+            f\"{PERSONAJE_BASE}\\n\\n\"
+            f\"Aún no tienes recuerdos de {ID_USUARIO}. \"
+            \"Cuando aprendas algo duradero en esta conversación, llama a `recordar`.\"
         )
-
-    return PERSONAJE_BASE, inyectar_memoria_dinamica
+    """,
+    name="_"
+)
 
 
 @app.cell
@@ -863,7 +951,6 @@ def _(
     opciones = menu_middlewares.value
 
     if llm_principal is not None:
-
         if opciones["resumen_conversacion"]:
             middlewares_activos.append(
                 SummarizationMiddleware(
@@ -872,7 +959,9 @@ def _(
                     keep=("messages", 20),
                 )
             )
-            middlewares_nombres.append("SummarizationMiddleware(trigger=40, keep=20)")
+            middlewares_nombres.append(
+                "SummarizationMiddleware(trigger=40, keep=20)"
+            )
 
         if opciones["edicion_contexto"]:
             middlewares_activos.append(ContextEditingMiddleware())
@@ -884,11 +973,17 @@ def _(
             middlewares_activos.append(
                 HumanInTheLoopMiddleware(
                     interrupt_on={
-                        "recordar":           True,
-                        "olvidar":            {"allowed_decisions": ["approve", "reject"]},
-                        "buscar_en_red":      {"allowed_decisions": ["approve", "reject"]},
-                        "investigar_a_fondo": {"allowed_decisions": ["approve", "reject"]},
-                        "extraer_pagina_web": {"allowed_decisions": ["approve", "reject"]},
+                        "recordar": True,
+                        "olvidar": {"allowed_decisions": ["approve", "reject"]},
+                        "buscar_en_red": {
+                            "allowed_decisions": ["approve", "reject"]
+                        },
+                        "investigar_a_fondo": {
+                            "allowed_decisions": ["approve", "reject"]
+                        },
+                        "extraer_pagina_web": {
+                            "allowed_decisions": ["approve", "reject"]
+                        },
                     },
                     description_prefix="⏸️ Aprobación requerida",
                 )
@@ -899,7 +994,9 @@ def _(
             middlewares_activos.append(
                 ModelCallLimitMiddleware(thread_limit=60, run_limit=25)
             )
-            middlewares_nombres.append("ModelCallLimitMiddleware(hilo=60, run=25)")
+            middlewares_nombres.append(
+                "ModelCallLimitMiddleware(hilo=60, run=25)"
+            )
 
         if opciones["limite_llamadas_herramienta"]:
             middlewares_activos.append(ToolCallLimitMiddleware(thread_limit=80))
@@ -928,21 +1025,32 @@ def _(
             middlewares_nombres.append("LLMToolSelectorMiddleware(max=3)")
 
         if opciones["censura_datos_personales"]:
-            middlewares_activos.append(PIIMiddleware(
-                "email", strategy="redact",
-                apply_to_tool_results=True, apply_to_input=True,
-            ))
+            middlewares_activos.append(
+                PIIMiddleware(
+                    "email",
+                    strategy="redact",
+                    apply_to_tool_results=True,
+                    apply_to_input=True,
+                )
+            )
             middlewares_activos.append(PIIMiddleware("url", strategy="redact"))
             middlewares_activos.append(PIIMiddleware("ip", strategy="mask"))
-            middlewares_activos.append(PIIMiddleware(
-                "phone",
-                detector=[r"[0-9]{3}-[0-9]{3}-[0-9]{4}", r"[0-9]{10}"],
-                strategy="mask",
-                apply_to_input=True, apply_to_tool_results=True,
-            ))
-            middlewares_activos.append(PIIMiddleware(
-                "ssn", detector=[r"\d{3}-\d{2}-\d{4}"], strategy="mask",
-            ))
+            middlewares_activos.append(
+                PIIMiddleware(
+                    "phone",
+                    detector=[r"[0-9]{3}-[0-9]{3}-[0-9]{4}", r"[0-9]{10}"],
+                    strategy="mask",
+                    apply_to_input=True,
+                    apply_to_tool_results=True,
+                )
+            )
+            middlewares_activos.append(
+                PIIMiddleware(
+                    "ssn",
+                    detector=[r"\d{3}-\d{2}-\d{4}"],
+                    strategy="mask",
+                )
+            )
             middlewares_nombres.append("PIIMiddleware(email,url,ip,phone,ssn)")
     return middlewares_activos, middlewares_nombres
 
@@ -976,7 +1084,9 @@ def _(agente_cerebro):
     if agente_cerebro is not None:
         arquitectura_mermaid = agente_cerebro.get_graph().draw_mermaid()
         # Mermaid usa [] para nodos; escapar evita conflictos de parseo
-        arquitectura_mermaid = arquitectura_mermaid.replace("[", "_").replace("]", "_")
+        arquitectura_mermaid = arquitectura_mermaid.replace("[", "_").replace(
+            "]", "_"
+        )
     else:
         arquitectura_mermaid = (
             "graph TD\n"
@@ -988,10 +1098,13 @@ def _(agente_cerebro):
 
 @app.cell(hide_code=True)
 def _(arquitectura_mermaid, middlewares_nombres, mo):
-    _lista_mw_arch = "\n".join(f"  {i+1}. `{n}`" for i, n in enumerate(middlewares_nombres))
+    _lista_mw_arch = "\n".join(
+        f"  {i + 1}. `{n}`" for i, n in enumerate(middlewares_nombres)
+    )
 
-    mo.vstack([
-    mo.md(f"""
+    mo.vstack(
+        [
+            mo.md(f"""
     ---
     ## 🗺️ Arquitectura Dinámica del Agente
 
@@ -1002,8 +1115,9 @@ def _(arquitectura_mermaid, middlewares_nombres, mo):
     **Pipeline activo ({len(middlewares_nombres)} capas):**
     {_lista_mw_arch}
     """),
-    mo.mermaid(arquitectura_mermaid),
-    ])
+            mo.mermaid(arquitectura_mermaid),
+        ]
+    )
     return
 
 
@@ -1025,15 +1139,16 @@ def _(
     semantica_activa,
     uuid,
 ):
-    # ── Modelos Pydantic para structured output ───────────────────────────────────────
-
     class OperacionMemoria(BaseModel):
         """Describe una operación de memoria a aplicar al almacén de largo plazo."""
+
         action: Literal["add", "update", "delete"] = Field(
             description="Acción: 'add' nuevo hecho, 'update' actualizar, 'delete' olvidar"
         )
         content: str = Field(description="Contenido del recuerdo")
-        kind: str = Field(description="Categoría: 'preferencia', 'hecho', 'proyecto', 'meta'")
+        kind: str = Field(
+            description="Categoría: 'preferencia', 'hecho', 'proyecto', 'meta'"
+        )
         old_content_query: Optional[str] = Field(
             default=None,
             description="Para update/delete: frase para encontrar el recuerdo anterior",
@@ -1041,6 +1156,7 @@ def _(
 
     class SalidaReflexion(BaseModel):
         """Salida estructurada del análisis de reflexión autónoma."""
+
         operations: List[OperacionMemoria] = Field(
             description="Lista de operaciones. Vacía si no hay información durable relevante."
         )
@@ -1058,37 +1174,38 @@ def _(
         analista = llm_respaldo if llm_respaldo else llm_principal
         if not analista:
             return []
-        
+
         prompt_reflexion = f"""
         Analiza este intercambio y extrae SOLO información personal duradera sobre el
         usuario que valga la pena recordar a largo plazo.
-    
+
         REGLAS:
         - Solo hechos objetivos, preferencias claras, proyectos activos o metas explícitas.
         - NO incluyas saludos, preguntas genéricas ni información transitoria.
         - Si la información actualiza o contradice algo previo → usa 'update' o 'delete'.
         - Si no hay nada relevante → devuelve operations: [].
-    
+
         Usuario: {texto_usuario}
         Asistente: {texto_agente}
         """
-        
+
         cambios: list[str] = []
         try:
             llm_estructurado = analista.with_structured_output(SalidaReflexion)
             resultado = llm_estructurado.invoke(prompt_reflexion)
-        
+
             for op in resultado.operations:
                 clave_uuid = uuid.uuid4().hex[:12]
                 ts = datetime.datetime.now().isoformat(timespec="seconds")
-            
+
                 if op.action == "add":
                     almacen_memoria.put(
-                        ESPACIO_MEMORIA, clave_uuid,
+                        ESPACIO_MEMORIA,
+                        clave_uuid,
                         {"text": op.content, "kind": op.kind, "ts": ts},
                     )
                     cambios.append(f"✅ **Añadido [{op.kind}]:** {op.content}")
-            
+
                 elif op.action in ("update", "delete") and op.old_content_query:
                     if semantica_activa:
                         hits = almacen_memoria.search(
@@ -1107,37 +1224,47 @@ def _(
                         if kw:
                             texto_antiguo = kw[0].get("text", "")
                             clave_antigua = next(
-                                (k for k, v in almacen_memoria._data.get(
-                                    ESPACIO_MEMORIA, {}
-                                ).items() if v.value.get("text") == texto_antiguo),
+                                (
+                                    k
+                                    for k, v in almacen_memoria._data.get(
+                                        ESPACIO_MEMORIA, {}
+                                    ).items()
+                                    if v.value.get("text") == texto_antiguo
+                                ),
                                 None,
                             )
                         else:
                             clave_antigua = None
                             texto_antiguo = ""
-            
+
                     if clave_antigua:
                         almacen_memoria.delete(ESPACIO_MEMORIA, clave_antigua)
                         if op.action == "update":
                             almacen_memoria.put(
-                                ESPACIO_MEMORIA, clave_uuid,
+                                ESPACIO_MEMORIA,
+                                clave_uuid,
                                 {"text": op.content, "kind": op.kind, "ts": ts},
                             )
                             cambios.append(
                                 f"🔄 **Actualizado:** *'{texto_antiguo}'* → *'{op.content}'*"
                             )
                         else:
-                            cambios.append(f"🗑️ **Olvidado:** *'{texto_antiguo}'*")
+                            cambios.append(
+                                f"🗑️ **Olvidado:** *'{texto_antiguo}'*"
+                            )
                     elif op.action == "update":
                         almacen_memoria.put(
-                            ESPACIO_MEMORIA, clave_uuid,
+                            ESPACIO_MEMORIA,
+                            clave_uuid,
                             {"text": op.content, "kind": op.kind, "ts": ts},
                         )
-                        cambios.append(f"✅ **Añadido (sin reemplazar):** {op.content}")
-                    
+                        cambios.append(
+                            f"✅ **Añadido (sin reemplazar):** {op.content}"
+                        )
+
         except Exception:
             pass
-        
+
         return cambios
 
     # ── Función principal de ejecución del agente ─────────────────────────────────────
@@ -1160,7 +1287,7 @@ def _(
             cfg = {
                 "configurable": {
                     "thread_id": ID_HILO,
-                    "user_id":   ID_USUARIO,
+                    "user_id": ID_USUARIO,
                 }
             }
 
@@ -1180,7 +1307,9 @@ def _(
                 return
 
             contenido = salida["messages"][-1].content
-            respuesta = contenido if isinstance(contenido, str) else str(contenido)
+            respuesta = (
+                contenido if isinstance(contenido, str) else str(contenido)
+            )
 
             # 2 · Mostrar respuesta provisional mientras corre la reflexión
             yield respuesta + "\n\n*(🧠 Actualizando memoria autónoma...)*"
@@ -1252,23 +1381,27 @@ def _(ESPACIO_MEMORIA, almacen_memoria, mo):
     _memorias = almacen_memoria.recientes(ESPACIO_MEMORIA, 100)
 
     if _memorias:
-        mo.vstack([
-            mo.md(f"**{len(_memorias)} recuerdo(s) en la base de datos**"),
-            mo.ui.table(
-                [
-                    {
-                        "Categoría":       m.get("kind", "—"),
-                        "Hecho recordado": m.get("text", "—"),
-                        "Guardado el":     m.get("ts", "—"),
-                    }
-                    for m in _memorias
-                ],
-                selection=None,
-            ),
-        ])
+        mo.vstack(
+            [
+                mo.md(f"**{len(_memorias)} recuerdo(s) en la base de datos**"),
+                mo.ui.table(
+                    [
+                        {
+                            "Categoría": m.get("kind", "—"),
+                            "Hecho recordado": m.get("text", "—"),
+                            "Guardado el": m.get("ts", "—"),
+                        }
+                        for m in _memorias
+                    ],
+                    selection=None,
+                ),
+            ]
+        )
     else:
         mo.callout(
-            mo.md("*(La base de datos de largo plazo está vacía — comienza una conversación)*"),
+            mo.md(
+                "*(La base de datos de largo plazo está vacía — comienza una conversación)*"
+            ),
             kind="info",
         )
     return
@@ -1309,21 +1442,23 @@ def _(ID_USUARIO, PERSONAJE_BASE, mezclar_recuerdos, mo, ui_consulta_visor):
     # ── Panel 1: recuerdos recuperados ──────────────────────────────────────────────
     if _recuerdos:
         _filas_mem = "\n".join(
-            f"| `{i+1}` | {r} |" for i, r in enumerate(_recuerdos)
+            f"| `{i + 1}` | {r} |" for i, r in enumerate(_recuerdos)
         )
         _panel_mem = mo.md(f"""
-        ### 🧠 Recuerdos recuperados para esta consulta ({len(_recuerdos)})
+    ### 🧠 Recuerdos recuperados para esta consulta ({len(_recuerdos)})
 
-        | # | Texto del recuerdo |
-        | :- | :--- |
-        {_filas_mem}
+    | # | Texto del recuerdo |
+    | :- | :--- |
+    {_filas_mem}
 
-        > *Orden: semántica primero (más relevante) → recencia (más reciente).
-        > Deduplicados: el mismo hecho no aparece dos veces.*
-        """)
+    > *Orden: semántica primero (más relevante) → recencia (más reciente).
+    > Deduplicados: el mismo hecho no aparece dos veces.*
+    """)
     else:
         _panel_mem = mo.callout(
-            mo.md("**Sin recuerdos aún.** Chatea con el agente para que guarde hechos y vuelve aquí."),
+            mo.md(
+                "**Sin recuerdos aún.** Chatea con el agente para que guarde hechos y vuelve aquí."
+            ),
             kind="info",
         )
 
@@ -1404,7 +1539,7 @@ def _(
     )
 
     _lista_mw_dash = "\n".join(
-        f"  {i+1}. `{n}`" for i, n in enumerate(middlewares_nombres)
+        f"  {i + 1}. `{n}`" for i, n in enumerate(middlewares_nombres)
     )
 
     _texto = f"""
@@ -1439,7 +1574,9 @@ def _(
     {_lista_mw_dash}
     """.strip()
 
-    _salud = "success" if (PRESENCIA_API_NVIDIA and semantica_activa) else "danger"
+    _salud = (
+        "success" if (PRESENCIA_API_NVIDIA and semantica_activa) else "danger"
+    )
     mo.callout(mo.md(_texto), kind=_salud)
     return
 
@@ -1460,16 +1597,93 @@ def _(mo):
         \"\"\"Describe aquí qué hace tu herramienta.\"\"\"
         """,
         label="Escribe tu herramienta aquí:",
-        language="python"
-        )
+        language="python",
+    )
     editor_herramienta
     return (editor_herramienta,)
 
 
 @app.cell
+def _(tool):
+    import urllib.request
+    import urllib.parse
+    import xml.etree.ElementTree as ET
+
+    @tool
+    def search_arxiv(query: str, max_results: int = 3) -> str:
+        """
+        Searches the arXiv database for scientific and academic papers.
+        Use this tool to find research papers, authors, or abstracts.
+
+        Args:
+            query: The search term (e.g., 'machine learning', 'quantum physics').
+            max_results: The maximum number of papers to return.
+        """
+        # Format the URL with the query
+        safe_query = urllib.parse.quote(query)
+        url = f"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results={max_results}"
+
+        try:
+            with urllib.request.urlopen(url) as response:
+                root = ET.fromstring(response.read())
+                ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+                papers = []
+                for entry in root.findall("atom:entry", ns):
+                    title = (
+                        entry.find("atom:title", ns)
+                        .text.replace("\n", " ")
+                        .strip()
+                    )
+                    summary = (
+                        entry.find("atom:summary", ns)
+                        .text.replace("\n", " ")
+                        .strip()
+                    )
+
+                    # We return a simple formatted string for the LLM to read
+                    papers.append(
+                        f"Title: {title}\nSummary: {summary[:200]}...\n---"
+                    )
+
+                return (
+                    "\n".join(papers)
+                    if papers
+                    else "No papers found for this query."
+                )
+
+        except Exception as e:
+            return f"Tool Error: {str(e)}"
+
+    return (urllib,)
+
+
+@app.cell
+def _(urllib):
+    def busqueda_arxiv(query: str):
+        """Funcion para buscar en el repositorio de preprints de arxiv
+        param: query Que se va a buscar
+        """
+        url = f"http://export.arxiv.org/api/query?search_query={query}:electron&start=0&max_results=1"
+        data = urllib.request.urlopen(url)
+        return data.read().decode("utf-8")
+
+    return
+
+
+@app.cell
+def _(pd):
+    def read_excel(path):
+        df = pd.read_excel(
+            path,
+        )
+        return df
+
+    return
+
+
+@app.cell
 def _(editor_herramienta, mo):
-    # --- Inyección Dinámica ---
-    # Esta celda ejecuta el código del editor y extrae la función definida
     namespace_herramientas = {}
     try:
         # Ejecutamos el código del editor en un espacio seguro
@@ -1477,7 +1691,8 @@ def _(editor_herramienta, mo):
 
         # Buscamos la función decorada con @tool
         herramienta_dinamica = [
-            val for val in namespace_herramientas.values() 
+            val
+            for val in namespace_herramientas.values()
             if hasattr(val, "name") and val.name == "mi_nueva_herramienta"
         ][0]
         status_msg = "✅ Herramienta compilada y lista para el agente."
@@ -1491,7 +1706,6 @@ def _(editor_herramienta, mo):
 
 @app.cell
 def _(herramienta_dinamica, herramientas_totales):
-    # Actualizamos las herramientas del agente
     if herramienta_dinamica:
         # Añadimos la herramienta nueva a la lista global
         herramientas_agente = herramientas_totales + [herramienta_dinamica]
