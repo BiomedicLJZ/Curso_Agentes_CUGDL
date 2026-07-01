@@ -10,6 +10,7 @@
 2. **Formato:** archivo nuevo `agent_deep.py`, notebook Marimo educativo. `agent_full.py` queda intacto como referencia de la versión LangChain pura.
 3. **Extras DeepAgents:** subagentes, filesystem tools expuestas, y todo lo necesario para un agente polivalente generalista, modular y fácilmente mejorable.
 4. **Multimodal:** panel de salidas multimodales (imágenes, PDF, video, audio, tablas) para artefactos producidos por tools o por el agente.
+5. **Constructor de subagentes:** panel/editor para crear subagentes como "papeles de una obra" (personas), persistidos en `./subagentes/*.md` e integrados en `create_deep_agent(subagents=...)`.
 
 ## Enfoque elegido
 
@@ -68,9 +69,9 @@ Celda Marimo con:
 - Input de fuente + botón instalar.
 - Botón recargar → invalida la celda del agente y lo reconstruye reactivamente.
 
-### 5 · Subagente `investigador` (nuevo)
+### 5 · Subagentes
 
-`SubAgent` con `tools=[buscar_en_red, investigar_a_fondo, extraer_pagina_web, search_arxiv]` y prompt propio de investigación. El agente principal delega vía la `task` tool sin contaminar su contexto.
+Los subagentes se definen mediante el constructor de la sección 9 y se pasan a `create_deep_agent(subagents=...)`. El agente principal delega vía la `task` tool sin contaminar su contexto. Como ejemplo sembrado (si `./subagentes/` está vacío) se crea el `investigador`: `tools=[buscar_en_red, investigar_a_fondo, extraer_pagina_web, search_arxiv]` con prompt propio de investigación.
 
 ### 6 · Manejo de errores
 
@@ -105,6 +106,31 @@ Botón refrescar, orden por fecha de modificación descendente, límite configur
 **8c · Chat multimodal.** `ejecutar_agente` post-procesa la respuesta: detecta rutas a artefactos nuevas o mencionadas durante el turno y hace yield del objeto Marimo correspondiente inline en el chat, además del texto.
 
 *Nota:* los modelos NIM configurados generan solo texto; lo multimodal proviene de tools. El panel queda preparado para modelos multimodales futuros.
+
+### 9 · Constructor de Subagentes — "Reparto de la Obra" (nuevo)
+
+**9a · Persistencia.** Directorio `./subagentes/`, un archivo `.md` por personaje, formato compatible con los agents de Claude Code (markdown + frontmatter YAML):
+
+```markdown
+---
+name: investigador
+description: Delega aquí investigación web profunda y búsqueda académica.
+tools: [buscar_en_red, investigar_a_fondo, extraer_pagina_web, search_arxiv]
+model: razonamiento   # opcional: estandar | razonamiento
+---
+Eres un investigador meticuloso. Contrastas fuentes, citas URLs...
+```
+
+Frontmatter = ficha técnica (el `description` es lo que el agente principal lee para decidir delegar); cuerpo = persona/system prompt del personaje.
+
+**9b · Panel constructor (celda nueva).** Formulario Marimo:
+- Nombre, descripción (rol en la obra), textarea de persona.
+- Multiselect de tools disponibles (de `herramientas_totales`).
+- Dropdown de modelo (estándar/razonamiento/heredar).
+- Botones: guardar (escribe el `.md`), eliminar, dropdown para cargar/editar existente.
+- Tabla del reparto actual (nombre + descripción + tools).
+
+**9c · Integración.** Al arrancar y tras cada guardado se parsean todos los `./subagentes/*.md` → lista de dicts `SubAgent` → `create_deep_agent(subagents=...)`. Marimo reconstruye el agente reactivamente y el diagrama Mermaid refleja los subagentes nuevos. Archivos malformados → omitidos con aviso en el panel (mismo patrón que skills).
 
 ## Fuera de alcance
 
