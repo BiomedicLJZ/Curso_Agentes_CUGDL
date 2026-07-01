@@ -39,7 +39,7 @@ agente = create_deep_agent(
 ```
 
 - Backend root = carpeta del proyecto. El agente puede `ls/read_file/write_file/edit_file` bajo esa raíz.
-- `interrupt_on` para `write_file`/`edit_file` se liga al switch existente *Humano en el Bucle*.
+- `interrupt_on` para `write_file`/`edit_file` se controla con un switch dedicado nuevo *Filesystem Protegido* (independiente del *Humano en el Bucle* existente, que sigue cubriendo tools de memoria/web). Este switch sustituye al de *Planificación de Tareas*: DeepAgents ya trae planning integrado (`write_todos`) y añadir `TodoListMiddleware` duplicaría la tool.
 
 ### 2 · Paridad total con `agent_full.py`
 
@@ -103,7 +103,7 @@ Los subagentes se definen mediante el constructor de la sección 9 y se pasan a 
 
 Botón refrescar, orden por fecha de modificación descendente, límite configurable de N recientes, cada artefacto en `mo.accordion` con nombre/tamaño/fecha.
 
-**8c · Chat multimodal.** `ejecutar_agente` post-procesa la respuesta: detecta rutas a artefactos nuevas o mencionadas durante el turno y hace yield del objeto Marimo correspondiente inline en el chat, además del texto.
+**8c · Chat multimodal.** `ejecutar_agente` toma un snapshot de `./artefactos/` antes de invocar al agente; los archivos nuevos tras el turno se renderizan inline en el chat (objeto Marimo junto al texto).
 
 *Nota:* los modelos NIM configurados generan solo texto; lo multimodal proviene de tools. El panel queda preparado para modelos multimodales futuros.
 
@@ -127,7 +127,7 @@ Frontmatter = ficha técnica (el `description` es lo que el agente principal lee
 - Nombre, descripción (rol en la obra), textarea de persona.
 - Multiselect de tools disponibles (de `herramientas_totales`).
 - Dropdown de modelo (estándar/razonamiento/heredar).
-- Botones: guardar (escribe el `.md`), eliminar, dropdown para cargar/editar existente.
+- Botones: guardar (escribe el `.md`; guardar con el mismo nombre sobrescribe = edición) y eliminar por nombre.
 - Tabla del reparto actual (nombre + descripción + tools).
 
 **9c · Integración.** Al arrancar y tras cada guardado se parsean todos los `./subagentes/*.md` → lista de dicts `SubAgent` → `create_deep_agent(subagents=...)`. Marimo reconstruye el agente reactivamente y el diagrama Mermaid refleja los subagentes nuevos. Archivos malformados → omitidos con aviso en el panel (mismo patrón que skills).
