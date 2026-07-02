@@ -1088,7 +1088,6 @@ def _(
     ModelFallbackMiddleware,
     ModelRetryMiddleware,
     PIIMiddleware,
-    SummarizationMiddleware,
     ToolCallLimitMiddleware,
     ToolRetryMiddleware,
     inyectar_memoria_dinamica,
@@ -1102,15 +1101,14 @@ def _(
 
     if llm_principal is not None:
         if opciones["resumen_conversacion"]:
-            middlewares_activos.append(
-                SummarizationMiddleware(
-                    model=llm_principal,
-                    trigger=("messages", 40),
-                    keep=("messages", 20),
-                )
-            )
+            # create_deep_agent() añade su propio SummarizationMiddleware
+            # de forma incondicional (deepagents.graph.create_summarization_
+            # middleware). Un segundo aquí colisiona por nombre de clase y
+            # create_agent() lanza AssertionError("Please remove duplicate
+            # middleware instances."). El resumen automático ya ocurre por
+            # defecto vía deepagents; este switch queda informativo.
             middlewares_nombres.append(
-                "SummarizationMiddleware(trigger=40, keep=20)"
+                "SummarizationMiddleware (provisto automáticamente por deepagents)"
             )
 
         if opciones["edicion_contexto"]:
@@ -1371,7 +1369,12 @@ def _(
     class OperacionMemoria(BaseModel):
         """Describe una operación de memoria a aplicar al almacén de largo plazo."""
 
-        action: Literal["add", "update", "delete"] = Field(
+        # noqa: F821 -- ruff falso positivo: `Literal` aquí es el parámetro
+        # de celda de marimo (sombrea a typing.Literal), así que ruff pierde
+        # el caso especial de typing.Literal y trata "add"/"update"/"delete"
+        # como nombres a resolver en vez de literales de cadena. El código
+        # es correcto: Python evalúa esto como Literal["add", "update", "delete"].
+        action: Literal["add", "update", "delete"] = Field(  # noqa: F821
             description="Acción: 'add' nuevo hecho, 'update' actualizar, 'delete' olvidar"
         )
         content: str = Field(description="Contenido del recuerdo")
@@ -2187,7 +2190,12 @@ def _(herramienta_dinamica, herramientas_totales):
         herramientas_agente = herramientas_totales + [herramienta_dinamica]
     else:
         herramientas_agente = herramientas_totales
-    return
+    # NOTA: herramientas_agente queda disponible para uso futuro (p.ej. si se
+    # rewire la celda de create_deep_agent para depender de ella); hoy
+    # agente_cerebro se construye antes en el notebook usando
+    # herramientas_totales, por lo que una tool creada aquí en caliente no
+    # se inyecta automáticamente sin recrear el agente.
+    return (herramientas_agente,)
 
 
 if __name__ == "__main__":
