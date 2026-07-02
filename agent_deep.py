@@ -1309,5 +1309,886 @@ def _(arquitectura_mermaid, middlewares_nombres, mo):
     return
 
 
+@app.cell
+def _(ds, json, mo):
+    def render_artefacto(ruta):
+        """Convierte un archivo de ./artefactos en el componente Marimo adecuado."""
+        categoria = ds.clasificar_artefacto(ruta)
+        try:
+            if categoria == "imagen":
+                return mo.image(str(ruta))
+            if categoria == "pdf":
+                return mo.pdf(src=str(ruta))
+            if categoria == "video":
+                return mo.video(str(ruta))
+            if categoria == "audio":
+                return mo.audio(str(ruta))
+            if categoria == "tabla":
+                import polars as pl
+
+                df = (
+                    pl.read_parquet(ruta)
+                    if ruta.suffix.lower() == ".parquet"
+                    else pl.read_csv(ruta)
+                )
+                return mo.ui.table(df, selection=None)
+            if categoria == "json":
+                return mo.tree(json.loads(ruta.read_text(encoding="utf-8")))
+            if categoria == "texto":
+                return mo.md(ruta.read_text(encoding="utf-8"))
+            if categoria == "html":
+                return mo.Html(ruta.read_text(encoding="utf-8"))
+        except Exception as e:
+            return mo.callout(mo.md(f"No pude renderizar `{ruta.name}`: {e}"), kind="warn")
+        # Categoría 'otro' → botón de descarga
+        return mo.download(data=ruta.read_bytes(), filename=ruta.name)
+
+    return (render_artefacto,)
+
+
+@app.cell
+def _(
+    BaseModel,
+    DIR_ARTEFACTOS,
+    ESPACIO_MEMORIA,
+    Field,
+    ID_HILO,
+    ID_USUARIO,
+    List,
+    Literal,
+    Optional,
+    agente_cerebro,
+    almacen_memoria,
+    datetime,
+    ds,
+    llm_principal,
+    llm_respaldo,
+    mo,
+    render_artefacto,
+    semantica_activa,
+    uuid,
+):
+    class OperacionMemoria(BaseModel):
+        """Describe una operación de memoria a aplicar al almacén de largo plazo."""
+
+        action: Literal["add", "update", "delete"] = Field(
+            description="Acción: 'add' nuevo hecho, 'update' actualizar, 'delete' olvidar"
+        )
+        content: str = Field(description="Contenido del recuerdo")
+        kind: str = Field(
+            description="Categoría: 'preferencia', 'hecho', 'proyecto', 'meta'"
+        )
+        old_content_query: Optional[str] = Field(
+            default=None,
+            description="Para update/delete: frase para encontrar el recuerdo anterior",
+        )
+
+    class SalidaReflexion(BaseModel):
+        """Salida estructurada del análisis de reflexión autónoma."""
+
+        operations: List[OperacionMemoria] = Field(
+            description="Lista de operaciones. Vacía si no hay información durable relevante."
+        )
+
+    # ── Reflexión autónoma ────────────────────────────────────────────────────────────
+
+    def _ejecutar_reflexion_autonoma(
+        texto_usuario: str, texto_agente: str
+    ) -> list[str]:
+        """Analiza el turno y actualiza la memoria de largo plazo si hay hechos nuevos.
+
+        Usa structured output para obtener JSON validado por Pydantic.
+        Errores son silenciosos: no deben interrumpir el flujo del chat.
+        """
+        analista = llm_respaldo if llm_respaldo else llm_principal
+        if not analista:
+            return []
+
+        prompt_reflexion = f"""
+        Analiza este intercambio y extrae SOLO información personal duradera sobre el
+        usuario que valga la pena recordar a largo plazo.
+
+        REGLAS:
+        - Solo hechos objetivos, preferencias claras, proyectos activos o metas explícitas.
+        - NO incluyas saludos, preguntas genéricas ni información transitoria.
+        - Si la información actualiza o contradice algo previo → usa 'update' o 'delete'.
+        - Si no hay nada relevante → devuelve operations: [].
+
+        Usuario: {texto_usuario}
+        Asistente: {texto_agente}
+        """
+
+        cambios: list[str] = []
+        try:
+            llm_estructurado = analista.with_structured_output(SalidaReflexion)
+            resultado = llm_estructurado.invoke(prompt_reflexion)
+
+            for op in resultado.operations:
+                clave_uuid = uuid.uuid4().hex[:12]
+                ts = datetime.datetime.now().isoformat(timespec="seconds")
+
+                if op.action == "add":
+                    almacen_memoria.put(
+                        ESPACIO_MEMORIA,
+                        clave_uuid,
+                        {"text": op.content, "kind": op.kind, "ts": ts},
+                    )
+                    cambios.append(f"✅ **Añadido [{op.kind}]:** {op.content}")
+
+                elif op.action in ("update", "delete") and op.old_content_query:
+                    if semantica_activa:
+                        hits = almacen_memoria.search(
+                            ESPACIO_MEMORIA, query=op.old_content_query, limit=1
+                        )
+                        if hits:
+                            clave_antigua = hits[0].key
+                            texto_antiguo = hits[0].value.get("text", "")
+                        else:
+                            clave_antigua = None
+                            texto_antiguo = ""
+                    else:
+                        kw = almacen_memoria.palabra_clave(
+                            ESPACIO_MEMORIA, op.old_content_query, 1
+                        )
+                        if kw:
+                            texto_antiguo = kw[0].get("text", "")
+                            clave_antigua = next(
+                                (
+                                    k
+                                    for k, v in almacen_memoria._data.get(
+                                        ESPACIO_MEMORIA, {}
+                                    ).items()
+                                    if v.value.get("text") == texto_antiguo
+                                ),
+                                None,
+                            )
+                        else:
+                            clave_antigua = None
+                            texto_antiguo = ""
+
+                    if clave_antigua:
+                        almacen_memoria.delete(ESPACIO_MEMORIA, clave_antigua)
+                        if op.action == "update":
+                            almacen_memoria.put(
+                                ESPACIO_MEMORIA,
+                                clave_uuid,
+                                {"text": op.content, "kind": op.kind, "ts": ts},
+                            )
+                            cambios.append(
+                                f"🔄 **Actualizado:** *'{texto_antiguo}'* → *'{op.content}'*"
+                            )
+                        else:
+                            cambios.append(
+                                f"🗑️ **Olvidado:** *'{texto_antiguo}'*"
+                            )
+                    elif op.action == "update":
+                        almacen_memoria.put(
+                            ESPACIO_MEMORIA,
+                            clave_uuid,
+                            {"text": op.content, "kind": op.kind, "ts": ts},
+                        )
+                        cambios.append(
+                            f"✅ **Añadido (sin reemplazar):** {op.content}"
+                        )
+
+        except Exception:
+            pass
+
+        return cambios
+
+    # ── Función principal de ejecución del agente ─────────────────────────────────────
+
+    def ejecutar_agente(mensajes, config=None):
+        """Función generadora que mo.ui.chat llama en cada turno del usuario.
+
+        Usa yield para streaming progresivo: el primer yield muestra un mensaje
+        provisional mientras la reflexión autónoma corre en segundo plano.
+        Los artefactos nuevos (imágenes, PDFs, tablas...) creados durante el turno
+        se detectan por snapshot y se renderizan inline en el chat.
+        """
+        if agente_cerebro is None:
+            yield (
+                "⚠️ **Agente inactivo.** Configura `NVIDIA_API_KEY` en tu archivo `.env`\n"
+                "y reinicia el notebook. La memoria a largo plazo ya está lista en disco."
+            )
+            return
+
+        try:
+            texto_usuario = mensajes[-1].content
+            cfg = {
+                "configurable": {
+                    "thread_id": ID_HILO,
+                    "user_id": ID_USUARIO,
+                }
+            }
+
+            # 1 · Ejecutar el agente (ciclo ReAct con middlewares activos)
+            # Snapshot para detectar artefactos creados durante el turno
+            _antes = {p for p in DIR_ARTEFACTOS.rglob("*") if p.is_file()}
+
+            salida = agente_cerebro.invoke(
+                {"messages": [{"role": "user", "content": texto_usuario}]},
+                cfg,
+            )
+
+            # Detectar interrupción por HumanInTheLoop
+            if isinstance(salida, dict) and salida.get("__interrupt__"):
+                yield (
+                    "⏸️ **Agente pausado — esperando aprobación humana.**\n\n"
+                    "Desactiva el middleware *Humano en el Bucle* en el panel de control "
+                    "si no quieres aprobar manualmente cada acción."
+                )
+                return
+
+            contenido = salida["messages"][-1].content
+            respuesta = (
+                contenido if isinstance(contenido, str) else str(contenido)
+            )
+
+            # Artefactos nuevos aparecidos en ./artefactos durante este turno
+            _nuevos = sorted(
+                {p for p in DIR_ARTEFACTOS.rglob("*") if p.is_file()} - _antes
+            )
+
+            def _vista(texto: str):
+                """Texto + artefactos nuevos renderizados inline en el chat."""
+                if not _nuevos:
+                    return texto
+                bloques = [mo.md(texto)]
+                for _ruta in _nuevos:
+                    bloques.append(mo.md(f"**📎 {_ruta.name}**"))
+                    bloques.append(render_artefacto(_ruta))
+                return mo.vstack(bloques)
+
+            # 2 · Mostrar respuesta provisional mientras corre la reflexión
+            yield _vista(respuesta + "\n\n*(🧠 Actualizando memoria autónoma...)*")
+
+            # 3 · Reflexión autónoma (Capa 3): analiza el turno y actualiza el store
+            cambios = _ejecutar_reflexion_autonoma(texto_usuario, respuesta)
+
+            # 4 · Respuesta final con cambios de memoria visibles (explicabilidad)
+            if cambios:
+                detalle = "\n".join(cambios)
+                yield _vista(
+                    respuesta
+                    + f"\n\n---\n**🧠 Memoria Autónoma — Cambios detectados:**\n{detalle}"
+                )
+            else:
+                yield _vista(respuesta)
+
+        except Exception as e:
+            yield f"❌ **Error al invocar el agente:**\n```\n{e!r}\n```"
+
+    return (ejecutar_agente,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 💬 Chat con el Agente
+
+    Interactúa directamente con el Cerebro en el Frasco. Usa los prompts sugeridos
+    para explorar las capacidades de memoria, búsqueda web y reflexión autónoma.
+    """)
+    return
+
+
+@app.cell
+def _(ejecutar_agente, mo):
+    interfaz_chat = mo.ui.chat(
+        ejecutar_agente,
+        prompts=[
+            "Hola, ¿qué recuerdas de mí?",
+            "Recuerda que estoy preparando un curso de agentes de IA para la CUGDL.",
+            "¿Cuáles son mis proyectos actuales?",
+            "Olvida todo lo que sabes sobre mis proyectos.",
+            "Busca en internet: mejores prácticas para agentes LangGraph 2025.",
+            "Explícame cómo funciona el middleware de resumen automático.",
+            "Lista tus skills disponibles y explica cuándo usarías cada una.",
+            "Instala la skill 'artifacts-builder' del marketplace.",
+            "Delega en el investigador: estado del arte de agentes con skills en 2026.",
+            "Genera un gráfico de barras con estos datos: [{\"x\": \"a\", \"y\": 3}, {\"x\": \"b\", \"y\": 7}]",
+        ],
+        show_configuration_controls=True,
+    )
+    interfaz_chat
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 🧩 Panel de Skills (estándar agentskills.io)
+
+    Skills instaladas en `./skills/` — el mismo formato `SKILL.md` que usan
+    Claude Code y otros arneses. El agente ve solo los *frontmatter* al arrancar
+    y lee el contenido completo únicamente cuando la tarea lo requiere
+    (**progressive disclosure**). Instala desde el marketplace escribiendo un
+    nombre corto (`pdf`), una URL de carpeta GitHub o una URL raw a un `SKILL.md`.
+
+    *Nota: tras instalar una skill nueva, reinicia el kernel o pulsa "Recargar" y
+    reejecuta la celda del agente para que DeepAgents relea `skills/`.*
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    ui_fuente_skill = mo.ui.text(
+        placeholder="nombre corto · URL github.com/.../tree/... · URL raw SKILL.md",
+        label="**Fuente de la skill**",
+        full_width=True,
+    )
+    ui_boton_instalar = mo.ui.run_button(label="⬇️ Instalar skill")
+    ui_boton_recargar_skills = mo.ui.run_button(label="🔄 Recargar")
+    return ui_boton_instalar, ui_boton_recargar_skills, ui_fuente_skill
+
+
+@app.cell
+def _(
+    DIR_SKILLS,
+    ds,
+    mo,
+    ui_boton_instalar,
+    ui_boton_recargar_skills,
+    ui_fuente_skill,
+):
+    _ = ui_boton_recargar_skills.value  # dependencia reactiva
+
+    _msg_instalacion = ""
+    if ui_boton_instalar.value and ui_fuente_skill.value.strip():
+        try:
+            _msg_instalacion = ds.instalar_skill_desde_fuente(
+                ui_fuente_skill.value.strip(), None, DIR_SKILLS
+            )
+        except Exception as _e:
+            _msg_instalacion = f"❌ Error: {_e}"
+
+    _skills, _avisos_skills = ds.listar_skills(DIR_SKILLS)
+
+    _bloques = [
+        mo.hstack(
+            [ui_fuente_skill, ui_boton_instalar, ui_boton_recargar_skills],
+            widths=[3, 1, 1],
+        )
+    ]
+    if _msg_instalacion:
+        _bloques.append(
+            mo.callout(
+                mo.md(_msg_instalacion),
+                kind="success" if _msg_instalacion.startswith("✅") else "danger",
+            )
+        )
+    for _aviso in _avisos_skills:
+        _bloques.append(mo.callout(mo.md(_aviso), kind="warn"))
+    if _skills:
+        _bloques.append(
+            mo.ui.table(
+                [{"Skill": s["name"], "Descripción": s["description"]} for s in _skills],
+                selection=None,
+            )
+        )
+    else:
+        _bloques.append(
+            mo.callout(mo.md("*(Sin skills — instala una arriba)*"), kind="info")
+        )
+
+    mo.vstack(_bloques)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 🎭 El Reparto de la Obra — Constructor de Subagentes
+
+    Cada personaje es un archivo `./subagentes/<nombre>.md` (frontmatter YAML +
+    persona), el mismo formato que los *agents* de Claude Code. El **director**
+    (agente principal) lee las `description` y delega escenas vía la tool `task`.
+    Guardar o eliminar un personaje **reconstruye el agente al instante**.
+    """)
+    return
+
+
+@app.cell
+def _(herramientas_totales, mo):
+    ui_sub_nombre = mo.ui.text(label="**Nombre** (sin espacios)", placeholder="critico")
+    ui_sub_descripcion = mo.ui.text(
+        label="**Descripción** — el director la lee para decidir delegar",
+        placeholder="Delega aquí revisiones de calidad de textos.",
+        full_width=True,
+    )
+    ui_sub_persona = mo.ui.text_area(
+        label="**Persona / system prompt del personaje**",
+        placeholder="Eres un crítico literario implacable pero justo...",
+        rows=6,
+        full_width=True,
+    )
+    ui_sub_tools = mo.ui.multiselect(
+        options=[t.name for t in herramientas_totales],
+        label="**Tools del personaje**",
+    )
+    ui_sub_modelo = mo.ui.dropdown(
+        options={"Heredar del director": "", "Estándar": "estandar", "Razonamiento": "razonamiento"},
+        value="Heredar del director",
+        label="**Modelo**",
+    )
+    ui_boton_guardar_sub = mo.ui.run_button(label="💾 Guardar personaje")
+    ui_sub_eliminar = mo.ui.text(label="**Eliminar personaje** (nombre)", placeholder="critico")
+    ui_boton_eliminar_sub = mo.ui.run_button(label="🗑️ Eliminar")
+    return (
+        ui_boton_eliminar_sub,
+        ui_boton_guardar_sub,
+        ui_sub_descripcion,
+        ui_sub_eliminar,
+        ui_sub_modelo,
+        ui_sub_nombre,
+        ui_sub_persona,
+        ui_sub_tools,
+    )
+
+
+@app.cell
+def _(
+    DIR_SUBAGENTES,
+    avisos_subagentes,
+    ds,
+    marcar_version_reparto,
+    mo,
+    obtener_version_reparto,
+    subagentes_cargados,
+    ui_boton_eliminar_sub,
+    ui_boton_guardar_sub,
+    ui_sub_descripcion,
+    ui_sub_eliminar,
+    ui_sub_modelo,
+    ui_sub_nombre,
+    ui_sub_persona,
+    ui_sub_tools,
+):
+    _msg_reparto = ""
+    if ui_boton_guardar_sub.value:
+        if ui_sub_nombre.value.strip() and ui_sub_persona.value.strip():
+            ds.guardar_subagente_md(
+                DIR_SUBAGENTES,
+                name=ui_sub_nombre.value.strip(),
+                description=ui_sub_descripcion.value.strip() or ui_sub_nombre.value,
+                persona=ui_sub_persona.value,
+                tools=list(ui_sub_tools.value),
+                model=ui_sub_modelo.value or None,
+            )
+            marcar_version_reparto(obtener_version_reparto() + 1)
+            _msg_reparto = f"✅ Personaje '{ui_sub_nombre.value}' guardado — agente reconstruido."
+        else:
+            _msg_reparto = "❌ Nombre y persona son obligatorios."
+
+    if ui_boton_eliminar_sub.value and ui_sub_eliminar.value.strip():
+        if ds.eliminar_subagente_md(DIR_SUBAGENTES, ui_sub_eliminar.value.strip()):
+            marcar_version_reparto(obtener_version_reparto() + 1)
+            _msg_reparto = f"🗑️ Personaje '{ui_sub_eliminar.value}' eliminado."
+        else:
+            _msg_reparto = f"❌ No existe '{ui_sub_eliminar.value}'."
+
+    _formulario = mo.vstack(
+        [
+            mo.hstack([ui_sub_nombre, ui_sub_modelo], widths=[1, 1]),
+            ui_sub_descripcion,
+            ui_sub_persona,
+            ui_sub_tools,
+            mo.hstack(
+                [ui_boton_guardar_sub, ui_sub_eliminar, ui_boton_eliminar_sub],
+                widths=[1, 2, 1],
+            ),
+        ]
+    )
+
+    _bloques = [_formulario]
+    if _msg_reparto:
+        _bloques.append(
+            mo.callout(
+                mo.md(_msg_reparto),
+                kind="danger" if _msg_reparto.startswith("❌") else "success",
+            )
+        )
+    for _aviso in avisos_subagentes:
+        _bloques.append(mo.callout(mo.md(_aviso), kind="warn"))
+    if subagentes_cargados:
+        _bloques.append(
+            mo.ui.table(
+                [
+                    {
+                        "Personaje": s["name"],
+                        "Rol (description)": s["description"],
+                        "Tools": ", ".join(t.name for t in s["tools"]) or "—",
+                        "Modelo": "propio" if "model" in s else "heredado",
+                    }
+                    for s in subagentes_cargados
+                ],
+                selection=None,
+            )
+        )
+    else:
+        _bloques.append(mo.callout(mo.md("*(Reparto vacío)*"), kind="info"))
+
+    mo.vstack(_bloques)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 🖼️ Galería de Artefactos Multimodales
+
+    Todo lo no-textual que produzcan las tools o el agente (vía `write_file`)
+    aterriza en `./artefactos/` y se renderiza aquí según su tipo:
+    imagen, PDF, video, audio, tabla, JSON, markdown, HTML o descarga directa.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    ui_boton_refrescar_galeria = mo.ui.run_button(label="🔄 Refrescar galería")
+    ui_limite_galeria = mo.ui.slider(
+        start=5, stop=50, step=5, value=10, label="**Máx. artefactos**"
+    )
+    return ui_boton_refrescar_galeria, ui_limite_galeria
+
+
+@app.cell
+def _(
+    DIR_ARTEFACTOS,
+    datetime,
+    ds,
+    mo,
+    render_artefacto,
+    ui_boton_refrescar_galeria,
+    ui_limite_galeria,
+):
+    _ = ui_boton_refrescar_galeria.value  # dependencia reactiva
+
+    _artefactos = ds.listar_artefactos(DIR_ARTEFACTOS, ui_limite_galeria.value)
+
+    _cabecera = mo.hstack(
+        [ui_boton_refrescar_galeria, ui_limite_galeria], widths=[1, 2]
+    )
+    if _artefactos:
+        _acordeon = mo.accordion(
+            {
+                (
+                    f"{_p.name} · {_p.stat().st_size / 1024:.1f} KB · "
+                    f"{datetime.datetime.fromtimestamp(_p.stat().st_mtime):%Y-%m-%d %H:%M}"
+                ): render_artefacto(_p)
+                for _p in _artefactos
+            }
+        )
+        mo.vstack([_cabecera, _acordeon])
+    else:
+        mo.vstack(
+            [
+                _cabecera,
+                mo.callout(
+                    mo.md("*(Sin artefactos — pide al agente un gráfico para probar)*"),
+                    kind="info",
+                ),
+            ]
+        )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 🗄️ Inspector de Memoria a Largo Plazo
+
+    Esta tabla muestra los hechos guardados en la base de datos de largo plazo.
+    Se actualiza conforme el agente guarda nuevos recuerdos — ya sea por llamada
+    explícita a `recordar` o por la reflexión autónoma post-turno.
+    """)
+    return
+
+
+@app.cell
+def _(ESPACIO_MEMORIA, almacen_memoria, mo):
+    _memorias = almacen_memoria.recientes(ESPACIO_MEMORIA, 100)
+
+    if _memorias:
+        mo.vstack(
+            [
+                mo.md(f"**{len(_memorias)} recuerdo(s) en la base de datos**"),
+                mo.ui.table(
+                    [
+                        {
+                            "Categoría": m.get("kind", "—"),
+                            "Hecho recordado": m.get("text", "—"),
+                            "Guardado el": m.get("ts", "—"),
+                        }
+                        for m in _memorias
+                    ],
+                    selection=None,
+                ),
+            ]
+        )
+    else:
+        mo.callout(
+            mo.md(
+                "*(La base de datos de largo plazo está vacía — comienza una conversación)*"
+            ),
+            kind="info",
+        )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 🔍 Visor de Inyección de Memoria Dinámica
+
+    Aquí puedes observar exactamente qué recuerdos inyecta `@dynamic_prompt` en el
+    **system prompt** del agente para cualquier consulta de prueba.
+
+    Escribe una frase abajo y compara cómo cambia el contexto que ve el LLM según
+    el tema de la consulta — la misma base de datos, resultados distintos.
+    Así funciona la búsqueda **semántica + recencia** en la práctica.
+    """)
+    return
+
+
+@app.cell
+def _(ID_USUARIO, mo):
+    ui_consulta_visor = mo.ui.text(
+        value=f"¿Qué recuerdas de {ID_USUARIO}?",
+        label="**Consulta de prueba** — escribe cualquier frase para ver qué memoria se inyectaría",
+        full_width=True,
+    )
+    ui_consulta_visor
+    return (ui_consulta_visor,)
+
+
+@app.cell
+def _(ID_USUARIO, PERSONAJE_BASE, mezclar_recuerdos, mo, ui_consulta_visor):
+    _consulta = ui_consulta_visor.value.strip() or ID_USUARIO
+    _recuerdos = mezclar_recuerdos(_consulta)
+
+    # ── Panel 1: recuerdos recuperados ──────────────────────────────────────────────
+    if _recuerdos:
+        _filas_mem = "\n".join(
+            f"| `{i + 1}` | {r} |" for i, r in enumerate(_recuerdos)
+        )
+        _panel_mem = mo.md(f"""
+    ### 🧠 Recuerdos recuperados para esta consulta ({len(_recuerdos)})
+
+    | # | Texto del recuerdo |
+    | :- | :--- |
+    {_filas_mem}
+
+    > *Orden: semántica primero (más relevante) → recencia (más reciente).
+    > Deduplicados: el mismo hecho no aparece dos veces.*
+    """)
+    else:
+        _panel_mem = mo.callout(
+            mo.md(
+                "**Sin recuerdos aún.** Chatea con el agente para que guarde hechos y vuelve aquí."
+            ),
+            kind="info",
+        )
+
+    # ── Panel 2: system prompt (PERSONAJE_BASE + recuerdos) que recibiría el LLM ────
+    if _recuerdos:
+        _bloque = "\n".join(f"  - {t}" for t in _recuerdos)
+        _system_prompt = (
+            f"{PERSONAJE_BASE}\n\n"
+            f"## Lo que recuerdas de {ID_USUARIO} (memoria persistente):\n"
+            f"{_bloque}\n\n"
+            "Usa estos recuerdos con naturalidad, sin anunciarlos explícitamente. "
+            "Si detectas información desactualizada, usa `olvidar` + `recordar`."
+        )
+    else:
+        _system_prompt = (
+            f"{PERSONAJE_BASE}\n\n"
+            f"Aún no tienes recuerdos de {ID_USUARIO}. "
+            "Cuando aprendas algo duradero en esta conversación, llama a `recordar`."
+        )
+
+    _panel_prompt = mo.md(f"""
+    ### 📋 System Prompt completo que ve el LLM
+
+    ```
+    {_system_prompt}
+    ```
+
+    > *Nota: esto es `PERSONAJE_BASE` + la sección de recuerdos inyectada dinámicamente.
+    > DeepAgents antepone su **propio andamiaje** (instrucciones de planificación,
+    > sistema de archivos virtual, catálogo de skills y de subagentes) delante de
+    > este bloque antes de enviarlo al LLM — lo que ves aquí es solo la porción
+    > que controla nuestro `dynamic_prompt`.*
+    """)
+
+    mo.vstack([_panel_mem, _panel_prompt], gap=2)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 📊 Dashboard de Estado del Sistema
+
+    Telemetría en tiempo real: APIs activas, modelos configurados,
+    rutas de almacenamiento y pipeline de middlewares activo.
+    """)
+    return
+
+
+@app.cell
+def _(
+    DIMENSIONES_EMB,
+    DIR_ARTEFACTOS,
+    DIR_SKILLS,
+    DIR_SUBAGENTES,
+    ESPACIO_MEMORIA,
+    ID_HILO,
+    ID_USUARIO,
+    MODELO_EMBEDDINGS,
+    MODELO_ESTANDAR,
+    MODELO_RAZONAMIENTO,
+    PRESENCIA_API_NVIDIA,
+    RUTA_BD_CORTO_PLAZO,
+    RUTA_BD_LARGO_PLAZO,
+    almacen_memoria,
+    ds,
+    middlewares_nombres,
+    mo,
+    nombre_modelo_activo,
+    semantica_activa,
+    subagentes_cargados,
+    ui_max_tokens,
+    ui_temperatura,
+    ui_top_p,
+):
+    _total_recuerdos = sum(len(v) for v in almacen_memoria._data.values())
+
+    _estado_api = (
+        "🟢 Conectada y verificada"
+        if PRESENCIA_API_NVIDIA
+        else "🔴 **FALTANTE** — el agente está inactivo"
+    )
+    _dim_str = f"{DIMENSIONES_EMB} dimensiones" if DIMENSIONES_EMB else "—"
+    _estado_semantica = (
+        f"🟢 Activa ({_dim_str})"
+        if semantica_activa
+        else "🔴 Degradada — solo recencia y keyword (sin NVIDIA_API_KEY o error de API)"
+    )
+
+    _lista_mw_dash = "\n".join(
+        f"  {i + 1}. `{n}`" for i, n in enumerate(middlewares_nombres)
+    )
+
+    _num_skills = len(ds.listar_skills(DIR_SKILLS)[0])
+
+    _texto = f"""
+    ## 🧠 Motores de Inferencia (NVIDIA NIM)
+
+    | Componente | Configuración | Estado |
+    | :--- | :--- | :--- |
+    | **API Key** | Variable `NVIDIA_API_KEY` | {_estado_api} |
+    | **LLM Activo** | `{nombre_modelo_activo}` | Temp `{ui_temperatura.value}` · Top-P `{ui_top_p.value}` · Tokens `{ui_max_tokens.value}` |
+    | **LLM Estándar** | `{MODELO_ESTANDAR}` | Disponible como fallback |
+    | **LLM Razonamiento** | `{MODELO_RAZONAMIENTO}` | Disponible como opción CoT |
+    | **Embeddings** | `{MODELO_EMBEDDINGS}` | {_estado_semantica} |
+
+    ---
+
+    ## 🗄️ Subsistemas de Memoria
+
+    | Capa | Tipo | Ruta en disco |
+    | :--- | :--- | :--- |
+    | **Corto Plazo** | `SqliteSaver` — historial del hilo actual | `{RUTA_BD_CORTO_PLAZO}` |
+    | **Largo Plazo** | `AlmacenPersistenteSQLite` — hechos durables | `{RUTA_BD_LARGO_PLAZO}` |
+
+    - **Espacio de nombres activo:** `{ESPACIO_MEMORIA[0]}/{ESPACIO_MEMORIA[1]}`
+    - **ID de sesión (hilo):** `{ID_HILO}`
+    - **Identidad del usuario:** `{ID_USUARIO}`
+    - **Recuerdos en base de datos:** **{_total_recuerdos}** hechos consolidados
+
+    ---
+
+    ## 🎭 Reparto y Recursos DeepAgents
+
+    | Recurso | Cantidad / Ruta |
+    | :--- | :--- |
+    | **Personajes (subagentes)** | **{len(subagentes_cargados)}** en `{DIR_SUBAGENTES}` |
+    | **Skills instaladas** | **{_num_skills}** en `{DIR_SKILLS}` |
+    | **Artefactos multimodales** | carpeta `{DIR_ARTEFACTOS}` |
+
+    ---
+
+    ## 🛡️ Pipeline de Middlewares Activos ({len(middlewares_nombres)} capas)
+
+    {_lista_mw_dash}
+    """.strip()
+
+    _salud = (
+        "success" if (PRESENCIA_API_NVIDIA and semantica_activa) else "danger"
+    )
+    mo.callout(mo.md(_texto), kind=_salud)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("### 🛠️ Editor de Herramientas del Estudiante")
+
+    # Editor de código para que el estudiante defina su herramienta
+    editor_herramienta = mo.ui.code_editor(
+        value="""from langchain.tools import tool
+        def mi_nueva_herramienta(pregunta: str) -> str:
+        \"\"\"Describe aquí qué hace tu herramienta.\"\"\"
+        """,
+        label="Escribe tu herramienta aquí:",
+        language="python",
+    )
+    editor_herramienta
+    return (editor_herramienta,)
+
+
+@app.cell
+def _(editor_herramienta, mo):
+    namespace_herramientas = {}
+    try:
+        # Ejecutamos el código del editor en un espacio seguro
+        exec(editor_herramienta.value, globals(), namespace_herramientas)
+
+        # Buscamos la función decorada con @tool
+        herramienta_dinamica = [
+            val
+            for val in namespace_herramientas.values()
+            if hasattr(val, "name") and val.name == "mi_nueva_herramienta"
+        ][0]
+        status_msg = "✅ Herramienta compilada y lista para el agente."
+    except Exception as e:
+        herramienta_dinamica = None
+        status_msg = f"❌ Error de sintaxis: {e}"
+
+    mo.md(status_msg)
+    return (herramienta_dinamica,)
+
+
+@app.cell
+def _(herramienta_dinamica, herramientas_totales):
+    if herramienta_dinamica:
+        # Añadimos la herramienta nueva a la lista global
+        herramientas_agente = herramientas_totales + [herramienta_dinamica]
+    else:
+        herramientas_agente = herramientas_totales
+    return
+
+
 if __name__ == "__main__":
     app.run()
