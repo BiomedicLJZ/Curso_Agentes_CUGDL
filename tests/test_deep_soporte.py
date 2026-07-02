@@ -343,3 +343,14 @@ def test_sembrar_subagente_ejemplo(tmp_path):
     assert ruta is not None and ruta.name == "investigador.md"
     # Idempotente: segunda siembra no hace nada
     assert ds.sembrar_subagente_ejemplo(tmp_path / "subs") is None
+
+
+def test_cargar_subagentes_tools_escalar(tmp_path):
+    # YAML permite `tools: tool_a` (escalar) — debe tratarse como lista de uno
+    (tmp_path / "solo.md").write_text(
+        "---\nname: solo\ndescription: x\ntools: tool_a\n---\npersona",
+        encoding="utf-8",
+    )
+    subs, avisos = ds.cargar_subagentes(tmp_path, {"tool_a": "OBJ"})
+    assert avisos == []
+    assert subs[0]["tools"] == ["OBJ"]

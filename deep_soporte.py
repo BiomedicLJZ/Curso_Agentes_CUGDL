@@ -289,7 +289,10 @@ def cargar_subagentes(
 
         tools_resueltas: list[object] = []
         desconocidas: list[str] = []
-        for nombre_tool in fm.get("tools") or []:
+        nombres_tools = fm.get("tools") or []
+        if isinstance(nombres_tools, str):  # YAML escalar → lista de uno
+            nombres_tools = [nombres_tools]
+        for nombre_tool in nombres_tools:
             if nombre_tool in registro_tools:
                 tools_resueltas.append(registro_tools[nombre_tool])
             else:
