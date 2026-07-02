@@ -249,3 +249,127 @@ def instalar_skill_desde_fuente(
         "❌ Fuente no reconocida. Usa: nombre corto, "
         "URL github.com/.../tree/<rama>/<ruta>, o URL raw a un SKILL.md."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Subagentes — "El Reparto de la Obra"
+#
+# Cada personaje es un archivo .md con frontmatter YAML (mismo formato que
+# los agents de Claude Code): name, description, tools (opcional),
+# model (opcional: 'estandar' | 'razonamiento'). El cuerpo es la persona.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def cargar_subagentes(
+    directorio: Path | str, registro_tools: dict[str, object]
+) -> tuple[list[dict], list[str]]:
+    """Parsea ./subagentes/*.md → dicts listos para create_deep_agent(subagents=…).
+
+    Los nombres de tools se resuelven contra registro_tools; desconocidas se
+    ignoran con aviso. El alias de modelo se devuelve como 'model_alias' para
+    que el notebook lo resuelva al objeto LLM correspondiente.
+    """
+    directorio = Path(directorio)
+    subagentes: list[dict] = []
+    avisos: list[str] = []
+    if not directorio.is_dir():
+        return subagentes, avisos
+
+    for archivo in sorted(directorio.glob("*.md")):
+        fm, cuerpo = parsear_frontmatter(archivo.read_text(encoding="utf-8"))
+        if not fm or "name" not in fm or "description" not in fm:
+            avisos.append(
+                f"⚠️ '{archivo.name}': frontmatter inválido "
+                "(requiere name y description) — omitido"
+            )
+            continue
+        if not cuerpo.strip():
+            avisos.append(f"⚠️ '{archivo.name}': sin persona (cuerpo vacío) — omitido")
+            continue
+
+        tools_resueltas: list[object] = []
+        desconocidas: list[str] = []
+        for nombre_tool in fm.get("tools") or []:
+            if nombre_tool in registro_tools:
+                tools_resueltas.append(registro_tools[nombre_tool])
+            else:
+                desconocidas.append(nombre_tool)
+        if desconocidas:
+            avisos.append(
+                f"⚠️ '{archivo.name}': tools desconocidas {desconocidas} — ignoradas"
+            )
+
+        subagente: dict = {
+            "name": str(fm["name"]),
+            "description": str(fm["description"]),
+            "system_prompt": cuerpo.strip(),
+            "tools": tools_resueltas,
+        }
+        if fm.get("model"):
+            subagente["model_alias"] = str(fm["model"])
+        subagentes.append(subagente)
+    return subagentes, avisos
+
+
+def guardar_subagente_md(
+    directorio: Path | str,
+    name: str,
+    description: str,
+    persona: str,
+    tools: list[str] | tuple = (),
+    model: str | None = None,
+) -> Path:
+    """Escribe <directorio>/<name>.md con frontmatter + persona."""
+    directorio = Path(directorio)
+    directorio.mkdir(parents=True, exist_ok=True)
+    frontmatter: dict = {"name": name, "description": description}
+    if tools:
+        frontmatter["tools"] = list(tools)
+    if model:
+        frontmatter["model"] = model
+    contenido = (
+        "---\n"
+        + yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False)
+        + "---\n"
+        + persona.strip()
+        + "\n"
+    )
+    ruta = directorio / f"{name}.md"
+    ruta.write_text(contenido, encoding="utf-8")
+    return ruta
+
+
+def eliminar_subagente_md(directorio: Path | str, name: str) -> bool:
+    """Borra el archivo del personaje. True si existía."""
+    ruta = Path(directorio) / f"{name}.md"
+    if ruta.is_file():
+        ruta.unlink()
+        return True
+    return False
+
+
+_PERSONA_INVESTIGADOR = """Eres un investigador meticuloso y escéptico.
+
+- Contrasta al menos dos fuentes antes de afirmar un hecho.
+- Cita siempre las URLs de tus fuentes.
+- Distingue explícitamente entre hecho verificado, consenso y especulación.
+- Devuelve un informe estructurado: hallazgos, fuentes, grado de confianza.
+"""
+
+
+def sembrar_subagente_ejemplo(directorio: Path | str) -> Path | None:
+    """Crea el personaje 'investigador' si el directorio está vacío."""
+    directorio = Path(directorio)
+    if directorio.is_dir() and any(directorio.glob("*.md")):
+        return None
+    return guardar_subagente_md(
+        directorio,
+        name="investigador",
+        description=(
+            "Delega aquí investigación web profunda y búsqueda académica: "
+            "temas actuales, papers, verificación de hechos multi-fuente."
+        ),
+        persona=_PERSONA_INVESTIGADOR,
+        tools=["buscar_en_red", "investigar_a_fondo", "extraer_pagina_web", "search_arxiv"],
+        model="razonamiento",
+    )

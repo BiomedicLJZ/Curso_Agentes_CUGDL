@@ -275,3 +275,71 @@ def test_instalar_url_raw_con_segmento_traversal_retorna_error(tmp_path):
     assert not (tmp_path.parent / "SKILL.md").exists()
     # No debe haberse creado ninguna carpeta '..' resuelta fuera de tmp_path.
     assert list(tmp_path.iterdir()) == []
+
+
+# ── subagentes ──────────────────────────────────────────────────────────────
+
+SUBAGENTE_MD = """---
+name: critico
+description: Delega aquí revisiones de calidad de textos.
+tools: [tool_a, tool_inexistente]
+model: razonamiento
+---
+Eres un crítico literario implacable pero justo.
+"""
+
+
+def test_cargar_subagentes(tmp_path):
+    (tmp_path / "critico.md").write_text(SUBAGENTE_MD, encoding="utf-8")
+    (tmp_path / "roto.md").write_text("sin frontmatter", encoding="utf-8")
+    registro = {"tool_a": "OBJETO_TOOL_A"}
+
+    subs, avisos = ds.cargar_subagentes(tmp_path, registro)
+
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub["name"] == "critico"
+    assert sub["description"].startswith("Delega")
+    assert sub["system_prompt"].startswith("Eres un crítico")
+    assert sub["tools"] == ["OBJETO_TOOL_A"]
+    assert sub["model_alias"] == "razonamiento"
+    # dos avisos: archivo roto + tool desconocida
+    assert len(avisos) == 2
+
+
+def test_cargar_subagentes_cuerpo_vacio_se_omite(tmp_path):
+    (tmp_path / "vacio.md").write_text(
+        "---\nname: vacio\ndescription: x\n---\n", encoding="utf-8"
+    )
+    subs, avisos = ds.cargar_subagentes(tmp_path, {})
+    assert subs == [] and len(avisos) == 1
+
+
+def test_guardar_y_recargar_subagente(tmp_path):
+    ruta = ds.guardar_subagente_md(
+        tmp_path,
+        name="poeta",
+        description="Delega aquí la escritura de poemas.",
+        persona="Eres un poeta del Siglo de Oro.",
+        tools=["tool_a"],
+        model="estandar",
+    )
+    assert ruta.name == "poeta.md"
+    subs, avisos = ds.cargar_subagentes(tmp_path, {"tool_a": 1})
+    assert avisos == []
+    assert subs[0]["name"] == "poeta"
+    assert subs[0]["tools"] == [1]
+    assert subs[0]["model_alias"] == "estandar"
+
+
+def test_eliminar_subagente(tmp_path):
+    ds.guardar_subagente_md(tmp_path, "x", "d", "persona", [], None)
+    assert ds.eliminar_subagente_md(tmp_path, "x") is True
+    assert ds.eliminar_subagente_md(tmp_path, "x") is False
+
+
+def test_sembrar_subagente_ejemplo(tmp_path):
+    ruta = ds.sembrar_subagente_ejemplo(tmp_path / "subs")
+    assert ruta is not None and ruta.name == "investigador.md"
+    # Idempotente: segunda siembra no hace nada
+    assert ds.sembrar_subagente_ejemplo(tmp_path / "subs") is None
