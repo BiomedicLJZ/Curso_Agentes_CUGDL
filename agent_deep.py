@@ -789,5 +789,525 @@ def _(ESPACIO_MEMORIA, almacen_memoria, semantica_activa):
     return mezclar_recuerdos, ultimo_texto_usuario
 
 
+@app.cell
+def _(
+    ESPACIO_MEMORIA,
+    almacen_memoria,
+    datetime,
+    semantica_activa,
+    tool,
+    uuid,
+):
+    @tool
+    def recordar(texto: str, categoria: str = "general") -> str:
+        """Almacena un recuerdo DURADERO sobre el usuario en la base de datos de largo plazo.
+        Úsalo cuando aprendas algo relevante que deba persistir en futuras conversaciones:
+        preferencias, proyectos actuales, restricciones, metas o decisiones importantes.
+        `categoria` agrupa el recuerdo (ej. 'preferencia', 'proyecto', 'hecho', 'meta')."""
+        clave = uuid.uuid4().hex[:12]
+        almacen_memoria.put(
+            ESPACIO_MEMORIA,
+            clave,
+            {
+                "text": texto,
+                "kind": categoria,
+                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        return f"🔒 Recuerdo sellado [{categoria}]: {texto}"
+
+    @tool
+    def evocar(consulta: str, modo: str = "semantica", limite: int = 5) -> str:
+        """Busca recuerdos en la memoria a largo plazo del usuario.
+        · modo='semantica'     → búsqueda por similitud semántica (requiere NVIDIA_API_KEY).
+        · modo='palabra_clave' → coincidencia textual exacta (siempre disponible).
+        · modo='reciente'      → los N recuerdos más recientemente guardados.
+        Usa 'semantica' por defecto; cae a 'reciente' si el embedding no está disponible."""
+        if modo == "reciente":
+            valores = almacen_memoria.recientes(ESPACIO_MEMORIA, limite)
+        elif modo == "palabra_clave":
+            valores = almacen_memoria.palabra_clave(
+                ESPACIO_MEMORIA, consulta, limite
+            )
+        else:
+            if not semantica_activa:
+                return (
+                    "(Búsqueda semántica desactivada: falta NVIDIA_API_KEY. "
+                    "Prueba modo='palabra_clave' o modo='reciente'.)"
+                )
+            valores = [
+                item.value
+                for item in almacen_memoria.search(
+                    ESPACIO_MEMORIA, query=consulta, limit=limite
+                )
+            ]
+
+        if not valores:
+            return "No encontré recuerdos relevantes para esa consulta."
+        return "\n".join(
+            f"• [{v.get('kind', '?')}] {v.get('text', '')} ({v.get('ts', '')})"
+            for v in valores
+        )
+
+    @tool
+    def olvidar(consulta: str) -> str:
+        """Elimina el recuerdo que mejor coincida con `consulta`.
+        Úsalo cuando el usuario pida explícitamente olvidar algo,
+        o cuando detectes que un hecho guardado ya es incorrecto o desactualizado."""
+        if not semantica_activa:
+            coincidencias = almacen_memoria.palabra_clave(
+                ESPACIO_MEMORIA, consulta, 1
+            )
+            if not coincidencias:
+                return "No encontré ningún recuerdo que coincida."
+            for clave, item in list(
+                almacen_memoria._data.get(ESPACIO_MEMORIA, {}).items()
+            ):
+                if item.value.get("text") == coincidencias[0].get("text"):
+                    almacen_memoria.delete(ESPACIO_MEMORIA, clave)
+                    return f"🗑️ Olvidado: {coincidencias[0].get('text', '')}"
+            return "No pude localizar la clave del recuerdo para eliminarlo."
+
+        resultados = almacen_memoria.search(
+            ESPACIO_MEMORIA, query=consulta, limit=1
+        )
+        if not resultados:
+            return "No encontré ningún recuerdo que coincida."
+        almacen_memoria.delete(ESPACIO_MEMORIA, resultados[0].key)
+        return f"🗑️ Olvidado: {resultados[0].value.get('text', '')}"
+
+    return evocar, olvidar, recordar
+
+
+@app.cell
+def _(
+    DIR_ARTEFACTOS,
+    DIR_SKILLS,
+    datetime,
+    ds,
+    evocar,
+    json,
+    olvidar,
+    os,
+    recordar,
+    tool,
+):
+    import urllib.request
+    import urllib.parse
+    import xml.etree.ElementTree as ET
+
+    @tool
+    def buscar_en_red(consulta: str) -> str:
+        """Realiza una búsqueda rápida en internet usando Tavily.
+        Devuelve hasta 5 resultados relevantes con título, URL y fragmento.
+        Úsalo para preguntas factuales actuales que no estén en tu conocimiento base."""
+        try:
+            from tavily import TavilyClient
+
+            cliente = TavilyClient(os.getenv("TAVILY_API_KEY"))
+            return str(cliente.search(consulta, max_results=5, language="es"))
+        except Exception as e:
+            return f"Error en búsqueda web: {e}"
+
+    @tool
+    def investigar_a_fondo(consulta: str) -> str:
+        """Investigación profunda y multi-fuente usando Tavily Research.
+        Más lenta que buscar_en_red pero produce análisis más completos.
+        Úsala para temas complejos que requieren síntesis de múltiples fuentes."""
+        try:
+            from tavily import TavilyClient
+
+            cliente = TavilyClient(os.getenv("TAVILY_API_KEY"))
+            return str(cliente.research(consulta))
+        except Exception as e:
+            return f"Error en investigación: {e}"
+
+    @tool
+    def extraer_pagina_web(url: str) -> str:
+        """Extrae el contenido textual de una página web específica usando Tavily Extract.
+        Úsalo cuando el usuario proporcione una URL y quiera que analices su contenido."""
+        try:
+            from tavily import TavilyClient
+
+            cliente = TavilyClient(os.getenv("TAVILY_API_KEY"))
+            return str(cliente.extract(url))
+        except Exception as e:
+            return f"Error al extraer página: {e}"
+
+    @tool
+    def search_arxiv(query: str, max_results: int = 3) -> str:
+        """
+        Searches the arXiv database for scientific and academic papers.
+        Use this tool to find research papers, authors, or abstracts.
+
+        Args:
+            query: The search term (e.g., 'machine learning', 'quantum physics').
+            max_results: The maximum number of papers to return.
+        """
+        # Format the URL with the query
+        safe_query = urllib.parse.quote(query)
+        url = f"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results={max_results}"
+
+        try:
+            with urllib.request.urlopen(url) as response:
+                root = ET.fromstring(response.read())
+                ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+                papers = []
+                for entry in root.findall("atom:entry", ns):
+                    title = (
+                        entry.find("atom:title", ns)
+                        .text.replace("\n", " ")
+                        .strip()
+                    )
+                    summary = (
+                        entry.find("atom:summary", ns)
+                        .text.replace("\n", " ")
+                        .strip()
+                    )
+
+                    # We return a simple formatted string for the LLM to read
+                    papers.append(
+                        f"Title: {title}\nSummary: {summary[:200]}...\n---"
+                    )
+
+                return (
+                    "\n".join(papers)
+                    if papers
+                    else "No papers found for this query."
+                )
+
+        except Exception as e:
+            return f"Tool Error: {str(e)}"
+
+    @tool
+    def instalar_skill(fuente: str, nombre: str = "") -> str:
+        """Instala una skill del marketplace de Agent Skills en ./skills/.
+        `fuente` puede ser: un nombre corto (se busca en anthropics/skills y
+        langchain-ai/langchain-skills), una URL github.com/.../tree/<rama>/<ruta>,
+        o una URL raw a un SKILL.md. `nombre` renombra la carpeta destino (opcional).
+        Tras instalar, avisa al usuario que pulse 'Recargar' en el Panel de Skills."""
+        try:
+            return ds.instalar_skill_desde_fuente(fuente, nombre or None, DIR_SKILLS)
+        except Exception as e:
+            return f"❌ Error instalando skill: {e}"
+
+    @tool
+    def generar_grafico(
+        datos_json: str,
+        tipo: str = "barras",
+        eje_x: str = "x",
+        eje_y: str = "y",
+        titulo: str = "Gráfico",
+    ) -> str:
+        """Genera un gráfico PNG en ./artefactos/ a partir de datos tabulares.
+        `datos_json`: lista JSON de objetos, ej. '[{"x": "a", "y": 3}, ...]'.
+        `tipo`: 'barras' | 'lineas' | 'puntos'. `eje_x`/`eje_y`: columnas a usar.
+        Devuelve la ruta del PNG generado (aparece en la Galería y en el chat)."""
+        import altair as alt
+        import polars as pl
+
+        try:
+            df = pl.DataFrame(json.loads(datos_json))
+            marcas = {"barras": "mark_bar", "lineas": "mark_line", "puntos": "mark_point"}
+            metodo_marca = marcas.get(tipo, "mark_bar")
+            grafico = getattr(alt.Chart(df, title=titulo), metodo_marca)().encode(
+                x=eje_x, y=eje_y
+            )
+            nombre_archivo = (
+                f"grafico_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
+            )
+            ruta = DIR_ARTEFACTOS / nombre_archivo
+            grafico.save(str(ruta))  # requiere vl-convert (ya en deps)
+            return f"📊 Gráfico guardado en artefactos/{nombre_archivo}"
+        except Exception as e:
+            return f"❌ Error generando gráfico: {e}"
+
+    herramientas_totales = [
+        recordar,
+        evocar,
+        olvidar,
+        buscar_en_red,
+        investigar_a_fondo,
+        extraer_pagina_web,
+        search_arxiv,
+        instalar_skill,
+        generar_grafico,
+    ]
+    # Registro nombre→tool: lo usan el constructor de subagentes y su cargador
+    registro_tools = {t.name: t for t in herramientas_totales}
+    return herramientas_totales, registro_tools, instalar_skill, generar_grafico
+
+
+@app.cell
+def _(ID_USUARIO, dynamic_prompt, mezclar_recuerdos, ultimo_texto_usuario):
+    PERSONAJE_BASE = (
+        "Eres el Agente Profundo: un asistente lúcido, analítico, con memoria "
+        "persistente, skills instalables y un reparto de subagentes a tu cargo. "
+        "Hablas en el idioma del usuario, tono directo pero cálido. "
+        "Cuando aprendas algo nuevo y duradero sobre el usuario, llama a `recordar`. "
+        "Delega en tus subagentes (tool `task`) cuando su description encaje con la tarea."
+    )
+
+    @dynamic_prompt
+    def inyectar_memoria_dinamica(peticion) -> str:
+        """APPENDEA recuerdos al system prompt existente.
+
+        ⚠️ Clave con DeepAgents: el prompt entrante ya contiene el andamiaje
+        (planning, filesystem, task, skills). Reemplazarlo lo rompería;
+        por eso concatenamos en vez de sustituir.
+        """
+        prompt_existente = peticion.system_prompt or ""
+        consulta = ultimo_texto_usuario(peticion.messages) or ID_USUARIO
+        recuerdos = mezclar_recuerdos(consulta)
+
+        if recuerdos:
+            bloque = "\n".join(f"  - {t}" for t in recuerdos)
+            seccion = (
+                f"\n\n## Lo que recuerdas de {ID_USUARIO} (memoria persistente):\n"
+                f"{bloque}\n\n"
+                "Usa estos recuerdos con naturalidad, sin anunciarlos. "
+                "Si detectas información desactualizada, usa `olvidar` + `recordar`."
+            )
+        else:
+            seccion = (
+                f"\n\nAún no tienes recuerdos de {ID_USUARIO}. "
+                "Cuando aprendas algo duradero, llama a `recordar`."
+            )
+        return prompt_existente + seccion
+
+    return PERSONAJE_BASE, inyectar_memoria_dinamica
+
+
+@app.cell
+def _(
+    ContextEditingMiddleware,
+    HumanInTheLoopMiddleware,
+    LLMToolSelectorMiddleware,
+    ModelCallLimitMiddleware,
+    ModelFallbackMiddleware,
+    ModelRetryMiddleware,
+    PIIMiddleware,
+    SummarizationMiddleware,
+    ToolCallLimitMiddleware,
+    ToolRetryMiddleware,
+    inyectar_memoria_dinamica,
+    llm_principal,
+    llm_respaldo,
+    menu_middlewares,
+):
+    middlewares_activos = [inyectar_memoria_dinamica]
+    middlewares_nombres = ["inyectar_memoria_dinamica"]
+    opciones = menu_middlewares.value
+
+    if llm_principal is not None:
+        if opciones["resumen_conversacion"]:
+            middlewares_activos.append(
+                SummarizationMiddleware(
+                    model=llm_principal,
+                    trigger=("messages", 40),
+                    keep=("messages", 20),
+                )
+            )
+            middlewares_nombres.append(
+                "SummarizationMiddleware(trigger=40, keep=20)"
+            )
+
+        if opciones["edicion_contexto"]:
+            middlewares_activos.append(ContextEditingMiddleware())
+            middlewares_nombres.append("ContextEditingMiddleware")
+
+        if opciones["humano_en_bucle"]:
+            # NOTA: Desactívalo si usas la UI de chat de Marimo; no puede reanudar
+            # un grafo suspendido sin lógica adicional de interrupción.
+            middlewares_activos.append(
+                HumanInTheLoopMiddleware(
+                    interrupt_on={
+                        "recordar": True,
+                        "olvidar": {"allowed_decisions": ["approve", "reject"]},
+                        "buscar_en_red": {
+                            "allowed_decisions": ["approve", "reject"]
+                        },
+                        "investigar_a_fondo": {
+                            "allowed_decisions": ["approve", "reject"]
+                        },
+                        "extraer_pagina_web": {
+                            "allowed_decisions": ["approve", "reject"]
+                        },
+                    },
+                    description_prefix="⏸️ Aprobación requerida",
+                )
+            )
+            middlewares_nombres.append("HumanInTheLoopMiddleware")
+
+        if opciones["limite_llamadas_modelo"]:
+            middlewares_activos.append(
+                ModelCallLimitMiddleware(thread_limit=60, run_limit=25)
+            )
+            middlewares_nombres.append(
+                "ModelCallLimitMiddleware(hilo=60, run=25)"
+            )
+
+        if opciones["limite_llamadas_herramienta"]:
+            middlewares_activos.append(ToolCallLimitMiddleware(thread_limit=80))
+            middlewares_nombres.append("ToolCallLimitMiddleware(hilo=80)")
+
+        if opciones["reintento_herramienta"]:
+            middlewares_activos.append(ToolRetryMiddleware(max_retries=2))
+            middlewares_nombres.append("ToolRetryMiddleware(max=2)")
+
+        if opciones["reintento_modelo"]:
+            middlewares_activos.append(ModelRetryMiddleware(max_retries=2))
+            middlewares_nombres.append("ModelRetryMiddleware(max=2)")
+
+        if opciones["modelo_respaldo"] and llm_respaldo is not None:
+            middlewares_activos.append(ModelFallbackMiddleware(llm_respaldo))
+            middlewares_nombres.append("ModelFallbackMiddleware")
+
+        if opciones["selector_herramientas"]:
+            middlewares_activos.append(
+                LLMToolSelectorMiddleware(model=llm_principal, max_tools=3)
+            )
+            middlewares_nombres.append("LLMToolSelectorMiddleware(max=3)")
+
+        if opciones["censura_datos_personales"]:
+            middlewares_activos.append(
+                PIIMiddleware(
+                    "email",
+                    strategy="redact",
+                    apply_to_tool_results=True,
+                    apply_to_input=True,
+                )
+            )
+            middlewares_activos.append(PIIMiddleware("url", strategy="redact"))
+            middlewares_activos.append(PIIMiddleware("ip", strategy="mask"))
+            middlewares_activos.append(
+                PIIMiddleware(
+                    "phone",
+                    detector=[r"[0-9]{3}-[0-9]{3}-[0-9]{4}", r"[0-9]{10}"],
+                    strategy="mask",
+                    apply_to_input=True,
+                    apply_to_tool_results=True,
+                )
+            )
+            middlewares_activos.append(
+                PIIMiddleware(
+                    "ssn",
+                    detector=[r"\d{3}-\d{2}-\d{4}"],
+                    strategy="mask",
+                )
+            )
+            middlewares_nombres.append("PIIMiddleware(email,url,ip,phone,ssn)")
+    return middlewares_activos, middlewares_nombres
+
+
+@app.cell
+def _(DIR_SUBAGENTES, ds, llm_estandar_obj, llm_principal, mo, registro_tools):
+    # Estado reactivo: incrementarlo desde el panel constructor fuerza recarga
+    obtener_version_reparto, marcar_version_reparto = mo.state(0)
+
+    def cargar_reparto():
+        """Lee ./subagentes/*.md y resuelve alias de modelo a objetos LLM."""
+        crudos, avisos = ds.cargar_subagentes(DIR_SUBAGENTES, registro_tools)
+        subagentes = []
+        for sub in crudos:
+            sub = dict(sub)
+            alias = sub.pop("model_alias", None)
+            if alias == "estandar" and llm_estandar_obj is not None:
+                sub["model"] = llm_estandar_obj
+            elif alias == "razonamiento" and llm_principal is not None:
+                sub["model"] = llm_principal
+            # sin alias → hereda el modelo del agente principal
+            subagentes.append(sub)
+        return subagentes, avisos
+
+    return cargar_reparto, marcar_version_reparto, obtener_version_reparto
+
+
+@app.cell
+def _(
+    FilesystemBackend,
+    RAIZ_PROYECTO,
+    almacen_memoria,
+    cargar_reparto,
+    create_deep_agent,
+    gestor_puntos_control,
+    herramientas_totales,
+    llm_principal,
+    menu_middlewares,
+    middlewares_activos,
+    obtener_version_reparto,
+    PERSONAJE_BASE,
+    uuid,
+):
+    _ = obtener_version_reparto()  # dependencia reactiva: recarga al guardar personajes
+    subagentes_cargados, avisos_subagentes = cargar_reparto()
+
+    agente_cerebro = None
+    if llm_principal is not None:
+        _interrupciones_fs = (
+            {"write_file": True, "edit_file": True}
+            if menu_middlewares.value["filesystem_protegido"]
+            else None
+        )
+        agente_cerebro = create_deep_agent(
+            model=llm_principal,
+            system_prompt=PERSONAJE_BASE,
+            tools=herramientas_totales,
+            middleware=middlewares_activos,
+            subagents=subagentes_cargados,
+            backend=FilesystemBackend(root_dir=str(RAIZ_PROYECTO)),
+            skills=["skills/"],
+            interrupt_on=_interrupciones_fs,
+            checkpointer=gestor_puntos_control,
+            store=almacen_memoria,
+        )
+
+    ID_HILO = "sesion-" + uuid.uuid4().hex[:8]
+    return ID_HILO, agente_cerebro, avisos_subagentes, subagentes_cargados
+
+
+@app.cell
+def _(agente_cerebro):
+    if agente_cerebro is not None:
+        arquitectura_mermaid = agente_cerebro.get_graph().draw_mermaid()
+        # Mermaid usa [] para nodos; escapar evita conflictos de parseo
+        arquitectura_mermaid = arquitectura_mermaid.replace("[", "_").replace(
+            "]", "_"
+        )
+    else:
+        arquitectura_mermaid = (
+            "graph TD\n"
+            "    A(⚠️ Agente Inactivo) --> B(Falta NVIDIA_API_KEY)\n"
+            "    B --> C(Configura tu .env para activar el agente)"
+        )
+    return (arquitectura_mermaid,)
+
+
+@app.cell(hide_code=True)
+def _(arquitectura_mermaid, middlewares_nombres, mo):
+    _lista_mw_arch = "\n".join(
+        f"  {i + 1}. `{n}`" for i, n in enumerate(middlewares_nombres)
+    )
+
+    mo.vstack(
+        [
+            mo.md(f"""
+    ---
+    ## 🗺️ Arquitectura Dinámica del Agente
+
+    *Este diagrama refleja el grafo de ejecución LangGraph con los middlewares
+    actualmente activos. Cambia los switches del panel de control y observa
+    cómo se transforma la arquitectura en tiempo real.*
+
+    **Pipeline activo ({len(middlewares_nombres)} capas):**
+    {_lista_mw_arch}
+    """),
+            mo.mermaid(arquitectura_mermaid),
+        ]
+    )
+    return
+
+
 if __name__ == "__main__":
     app.run()
