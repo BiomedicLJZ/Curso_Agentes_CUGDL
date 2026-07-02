@@ -376,3 +376,38 @@ def sembrar_subagente_ejemplo(directorio: Path | str) -> Path | None:
         tools=["buscar_en_red", "investigar_a_fondo", "extraer_pagina_web", "search_arxiv"],
         model="razonamiento",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Artefactos multimodales — clasificación por extensión para la galería
+# ═══════════════════════════════════════════════════════════════════════════
+
+_CATEGORIAS_ARTEFACTO: dict[str, set[str]] = {
+    "imagen": {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"},
+    "pdf": {".pdf"},
+    "video": {".mp4", ".webm"},
+    "audio": {".mp3", ".wav"},
+    "tabla": {".csv", ".parquet"},
+    "json": {".json"},
+    "texto": {".md", ".txt"},
+    "html": {".html"},
+}
+
+
+def clasificar_artefacto(ruta: Path | str) -> str:
+    """Categoría de render para la galería según la extensión del archivo."""
+    extension = Path(ruta).suffix.lower()
+    for categoria, extensiones in _CATEGORIAS_ARTEFACTO.items():
+        if extension in extensiones:
+            return categoria
+    return "otro"
+
+
+def listar_artefactos(directorio: Path | str, limite: int = 20) -> list[Path]:
+    """Archivos del directorio (recursivo) ordenados del más reciente al más viejo."""
+    directorio = Path(directorio)
+    if not directorio.is_dir():
+        return []
+    archivos = [p for p in directorio.rglob("*") if p.is_file()]
+    archivos.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return archivos[:limite]

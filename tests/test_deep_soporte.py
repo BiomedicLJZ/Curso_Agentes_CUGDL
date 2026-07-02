@@ -354,3 +354,41 @@ def test_cargar_subagentes_tools_escalar(tmp_path):
     subs, avisos = ds.cargar_subagentes(tmp_path, {"tool_a": "OBJ"})
     assert avisos == []
     assert subs[0]["tools"] == ["OBJ"]
+
+
+# ── Artefactos multimodales ──────────────────────────────────────────────────
+
+import os
+import time
+
+
+def test_clasificar_artefacto():
+    casos = {
+        "a.png": "imagen", "b.JPG": "imagen", "c.svg": "imagen",
+        "d.pdf": "pdf", "e.mp4": "video", "f.webm": "video",
+        "g.mp3": "audio", "h.wav": "audio", "i.csv": "tabla",
+        "j.parquet": "tabla", "k.json": "json", "l.md": "texto",
+        "m.html": "html", "n.xyz": "otro",
+    }
+    for nombre, esperado in casos.items():
+        assert ds.clasificar_artefacto(Path(nombre)) == esperado, nombre
+
+
+def test_listar_artefactos_orden_y_limite(tmp_path):
+    viejo = tmp_path / "viejo.png"
+    nuevo = tmp_path / "nuevo.pdf"
+    viejo.write_bytes(b"1")
+    nuevo.write_bytes(b"2")
+    ahora = time.time()
+    os.utime(viejo, (ahora - 100, ahora - 100))
+    os.utime(nuevo, (ahora, ahora))
+    (tmp_path / "subdir").mkdir()  # los directorios se ignoran
+
+    artefactos = ds.listar_artefactos(tmp_path)
+    assert [p.name for p in artefactos] == ["nuevo.pdf", "viejo.png"]
+
+    assert len(ds.listar_artefactos(tmp_path, limite=1)) == 1
+
+
+def test_listar_artefactos_dir_inexistente(tmp_path):
+    assert ds.listar_artefactos(tmp_path / "nada") == []
