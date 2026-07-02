@@ -124,6 +124,18 @@ _PATRON_TREE_GITHUB = re.compile(
     r"https?://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.+)"
 )
 
+_PATRON_NOMBRE_SEGURO = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _nombre_seguro(nombre: str) -> str:
+    """Valida un componente de ruta: sin separadores, sin '..', solo [A-Za-z0-9._-].
+
+    Lanza ValueError si el nombre podría escapar del directorio destino.
+    """
+    if not _PATRON_NOMBRE_SEGURO.match(nombre) or nombre in {".", ".."}:
+        raise ValueError(f"Nombre de archivo/carpeta inseguro: {nombre!r}")
+    return nombre
+
 
 def _descargar(url: str) -> bytes:
     """Descarga una URL. Inyectable en tests para no tocar la red."""
@@ -155,15 +167,16 @@ def _descargar_carpeta_github(
     for entrada in listado:
         if _contador[0] >= MAX_ARCHIVOS:
             break
+        nombre_entrada = _nombre_seguro(entrada["name"])
         if entrada["type"] == "dir":
             _descargar_carpeta_github(
                 owner, repo, entrada["path"], ref,
-                destino / entrada["name"], descargar, _contador,
+                destino / nombre_entrada, descargar, _contador,
             )
         elif entrada["type"] == "file":
             if entrada.get("size", 0) > MAX_BYTES:
                 continue
-            (destino / entrada["name"]).write_bytes(
+            (destino / nombre_entrada).write_bytes(
                 descargar(entrada["download_url"])
             )
             _contador[0] += 1
@@ -183,7 +196,10 @@ def instalar_skill_desde_fuente(
 
     # Caso 1 · URL directa a un SKILL.md
     if fuente.startswith("http") and fuente.rstrip("/").endswith("SKILL.md"):
-        nombre_final = nombre or fuente.rstrip("/").split("/")[-2]
+        try:
+            nombre_final = _nombre_seguro(nombre or fuente.rstrip("/").split("/")[-2])
+        except ValueError as e:
+            return f"❌ {e}"
         destino = dir_skills / nombre_final
         destino.mkdir(parents=True, exist_ok=True)
         (destino / "SKILL.md").write_bytes(descargar(fuente))
@@ -193,15 +209,21 @@ def instalar_skill_desde_fuente(
     m = _PATRON_TREE_GITHUB.match(fuente)
     if m:
         owner, repo, ref, ruta = m.groups()
-        nombre_final = nombre or ruta.rstrip("/").split("/")[-1]
-        n = _descargar_carpeta_github(
-            owner, repo, ruta, ref, dir_skills / nombre_final, descargar
-        )
+        try:
+            nombre_final = _nombre_seguro(nombre or ruta.rstrip("/").split("/")[-1])
+            n = _descargar_carpeta_github(
+                owner, repo, ruta, ref, dir_skills / nombre_final, descargar
+            )
+        except ValueError as e:
+            return f"❌ {e}"
         return f"✅ Skill '{nombre_final}' instalada ({n} archivos)"
 
     # Caso 3 · Nombre corto → sondear repos conocidos del marketplace
     if not fuente.startswith("http"):
-        nombre_final = nombre or fuente.split("/")[-1]
+        try:
+            nombre_final = _nombre_seguro(nombre or fuente.split("/")[-1])
+        except ValueError as e:
+            return f"❌ {e}"
         destino = dir_skills / nombre_final
         for owner, repo in REPOS_CONOCIDOS:
             for ruta in (fuente, f"skills/{fuente}"):

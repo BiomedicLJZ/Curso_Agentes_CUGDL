@@ -191,3 +191,87 @@ def test_instalar_carpeta_sin_skill_md_se_limpia(tmp_path):
     msg = ds.instalar_skill_desde_fuente("qux", None, tmp_path, descargar=fake)
     assert msg.startswith("❌")
     assert not (tmp_path / "qux").exists()
+
+
+# ── seguridad: path traversal en el instalador de skills ────────────────────
+
+
+def test_instalar_carpeta_github_con_nombre_traversal_no_escribe_fuera(tmp_path):
+    """Una entrada 'name': '../evil.py' en el listado de GitHub no debe poder
+    escribir fuera de la carpeta destino de la skill."""
+    api = "https://api.github.com/repos/own/rep/contents/skills/bar?ref=main"
+    listado = [
+        {
+            "type": "file",
+            "name": "SKILL.md",
+            "size": 100,
+            "download_url": "https://raw.example/SKILL.md",
+        },
+        {
+            "type": "file",
+            "name": "../evil.py",
+            "size": 10,
+            "download_url": "https://raw.example/evil.py",
+        },
+    ]
+    fake = _fake_descargar_factory(
+        {
+            api: json.dumps(listado).encode(),
+            "https://raw.example/SKILL.md": FM_VALIDO.encode(),
+            "https://raw.example/evil.py": b"import os; os.system('rm -rf /')",
+        }
+    )
+
+    ds.instalar_skill_desde_fuente(
+        "https://github.com/own/rep/tree/main/skills/bar", None, tmp_path, descargar=fake
+    )
+
+    # Nada debe escribirse fuera de tmp_path (la carpeta que contiene todo el
+    # árbol de destino usado en el test).
+    assert not (tmp_path / "evil.py").exists()
+    assert not (tmp_path.parent / "evil.py").exists()
+    for ruta in tmp_path.rglob("evil.py"):
+        raise AssertionError(f"Archivo malicioso escrito en {ruta}")
+
+
+def test_instalar_carpeta_github_con_nombre_dir_traversal_no_escapa(tmp_path):
+    """Una entrada 'type': 'dir', 'name': '..' no debe permitir recursión hacia
+    fuera de la carpeta destino."""
+    api = "https://api.github.com/repos/own/rep/contents/skills/bar?ref=main"
+    listado = [
+        {
+            "type": "file",
+            "name": "SKILL.md",
+            "size": 100,
+            "download_url": "https://raw.example/SKILL.md",
+        },
+        {"type": "dir", "name": "..", "path": "skills"},
+    ]
+    fake = _fake_descargar_factory(
+        {
+            api: json.dumps(listado).encode(),
+            "https://raw.example/SKILL.md": FM_VALIDO.encode(),
+        }
+    )
+
+    ds.instalar_skill_desde_fuente(
+        "https://github.com/own/rep/tree/main/skills/bar", None, tmp_path, descargar=fake
+    )
+
+    # No debe haberse creado/escrito nada en tmp_path directamente (solo dentro
+    # de tmp_path/bar debería existir cualquier archivo).
+    assert not (tmp_path / "SKILL.md").exists()
+
+
+def test_instalar_url_raw_con_segmento_traversal_retorna_error(tmp_path):
+    """Una URL raw cuyo penúltimo segmento es '..' no debe derivar un nombre de
+    carpeta que escape de dir_skills."""
+    url = "https://raw.example/skills/../SKILL.md"
+    fake = _fake_descargar_factory({url: FM_VALIDO.encode()})
+
+    msg = ds.instalar_skill_desde_fuente(url, None, tmp_path, descargar=fake)
+
+    assert msg.startswith("❌")
+    assert not (tmp_path.parent / "SKILL.md").exists()
+    # No debe haberse creado ninguna carpeta '..' resuelta fuera de tmp_path.
+    assert list(tmp_path.iterdir()) == []
