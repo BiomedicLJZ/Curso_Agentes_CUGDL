@@ -322,7 +322,12 @@ def guardar_subagente_md(
     tools: list[str] | tuple = (),
     model: str | None = None,
 ) -> Path:
-    """Escribe <directorio>/<name>.md con frontmatter + persona."""
+    """Escribe <directorio>/<name>.md con frontmatter + persona.
+
+    Lanza ValueError si `name` podría escapar del directorio destino
+    (mismo criterio que `_nombre_seguro`, usado en el instalador de skills).
+    """
+    _nombre_seguro(name)
     directorio = Path(directorio)
     directorio.mkdir(parents=True, exist_ok=True)
     frontmatter: dict = {"name": name, "description": description}
@@ -343,7 +348,11 @@ def guardar_subagente_md(
 
 
 def eliminar_subagente_md(directorio: Path | str, name: str) -> bool:
-    """Borra el archivo del personaje. True si existía."""
+    """Borra el archivo del personaje. True si existía.
+
+    Lanza ValueError si `name` podría escapar del directorio destino.
+    """
+    _nombre_seguro(name)
     ruta = Path(directorio) / f"{name}.md"
     if ruta.is_file():
         ruta.unlink()

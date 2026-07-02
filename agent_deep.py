@@ -113,6 +113,8 @@
 #  PIPELINE (exterior → interior):
 #    inyectar_memoria_dinamica   ← @dynamic_prompt custom; inyecta recuerdos en el system prompt
 #    SummarizationMiddleware     ← resume histórico cuando supera N mensajes
+#                                   (siempre activo: lo añade DeepAgents incondicionalmente,
+#                                   el switch del panel es solo informativo — ver CONCEPTO 5)
 #    ContextEditingMiddleware    ← poda resultados de tools para liberar contexto
 #    HumanInTheLoopMiddleware    ← pausa y pide aprobación antes de acciones críticas
 #    ModelCallLimitMiddleware    ← tope de seguridad en llamadas al LLM
@@ -120,9 +122,11 @@
 #    ToolRetryMiddleware         ← reintenta herramientas que lanzan excepción
 #    ModelRetryMiddleware        ← reintenta el LLM ante errores de red/timeout
 #    ModelFallbackMiddleware     ← redirecciona al modelo de respaldo si el principal falla
-#    TodoListMiddleware          ← fuerza al LLM a planificar antes de actuar
 #    LLMToolSelectorMiddleware   ← filtra tools dinámicamente (útil con >10 tools)
 #    PIIMiddleware               ← detecta y enmascara datos personales sensibles
+#
+#  (TodoListMiddleware NO se añade aquí: DeepAgents ya integra planificación
+#  vía la tool write_todos — ver CONCEPTO 5.)
 #
 # ─────────────────────────────────────────────────────────────────────────────────────
 #
@@ -419,7 +423,8 @@ def _(mo):
         {
             "resumen_conversacion": mo.ui.switch(
                 value=True,
-                label="📄 **Resumen Automático** — Condensa historiales largos para no agotar el contexto",
+                label="📄 **Resumen Automático** (informativo — deepagents lo añade "
+                "siempre) — Condensa historiales largos para no agotar el contexto",
             ),
             "modelo_respaldo": mo.ui.switch(
                 value=True,
@@ -721,7 +726,7 @@ def _(
     ui_temperatura,
     ui_top_p,
 ):
-    llm_principal = llm_respaldo = None
+    llm_principal = llm_respaldo = llm_razonamiento_obj = None
     nombre_modelo_activo = (
         MODELO_RAZONAMIENTO if ui_razonamiento.value else MODELO_ESTANDAR
     )
@@ -745,8 +750,22 @@ def _(
             **_params,
             chat_template_kwargs=_thinking,
         )
+        # Objeto dedicado para el alias de subagente 'razonamiento': a
+        # diferencia de llm_principal (que sigue el switch de CoT del
+        # director), este SIEMPRE usa MODELO_RAZONAMIENTO.
+        llm_razonamiento_obj = ChatNVIDIA(
+            model=MODELO_RAZONAMIENTO,
+            **_params,
+            chat_template_kwargs=_thinking,
+        )
     llm_estandar_obj = llm_respaldo  # alias claro para el resolvedor de subagentes
-    return llm_estandar_obj, llm_principal, llm_respaldo, nombre_modelo_activo
+    return (
+        llm_estandar_obj,
+        llm_principal,
+        llm_razonamiento_obj,
+        llm_respaldo,
+        nombre_modelo_activo,
+    )
 
 
 @app.cell
@@ -891,6 +910,7 @@ def _(
     os,
     recordar,
     tool,
+    uuid,
 ):
     import urllib.request
     import urllib.parse
@@ -986,7 +1006,8 @@ def _(
         `fuente` puede ser: un nombre corto (se busca en anthropics/skills y
         langchain-ai/langchain-skills), una URL github.com/.../tree/<rama>/<ruta>,
         o una URL raw a un SKILL.md. `nombre` renombra la carpeta destino (opcional).
-        Tras instalar, avisa al usuario que pulse 'Recargar' en el Panel de Skills."""
+        Tras instalar, avisa al usuario que pulse 'Recargar' en el Panel de Skills:
+        eso reconstruye el agente automáticamente para que la skill quede disponible."""
         try:
             return ds.instalar_skill_desde_fuente(fuente, nombre or None, DIR_SKILLS)
         except Exception as e:
@@ -1015,7 +1036,8 @@ def _(
                 x=eje_x, y=eje_y
             )
             nombre_archivo = (
-                f"grafico_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
+                f"grafico_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+                f"_{uuid.uuid4().hex[:6]}.png"
             )
             ruta = DIR_ARTEFACTOS / nombre_archivo
             grafico.save(str(ruta))  # requiere vl-convert (ya en deps)
@@ -1100,16 +1122,15 @@ def _(
     opciones = menu_middlewares.value
 
     if llm_principal is not None:
-        if opciones["resumen_conversacion"]:
-            # create_deep_agent() añade su propio SummarizationMiddleware
-            # de forma incondicional (deepagents.graph.create_summarization_
-            # middleware). Un segundo aquí colisiona por nombre de clase y
-            # create_agent() lanza AssertionError("Please remove duplicate
-            # middleware instances."). El resumen automático ya ocurre por
-            # defecto vía deepagents; este switch queda informativo.
-            middlewares_nombres.append(
-                "SummarizationMiddleware (provisto automáticamente por deepagents)"
-            )
+        # create_deep_agent() añade su propio SummarizationMiddleware de forma
+        # INCONDICIONAL (deepagents.graph.create_summarization_middleware),
+        # sin importar el switch. Un segundo aquí colisiona por nombre de
+        # clase y create_agent() lanza AssertionError("Please remove
+        # duplicate middleware instances."). Por eso se refleja siempre en la
+        # lista — el switch de abajo es solo informativo, no lo controla.
+        middlewares_nombres.append(
+            "SummarizationMiddleware (provisto automáticamente por deepagents)"
+        )
 
         if opciones["edicion_contexto"]:
             middlewares_activos.append(ContextEditingMiddleware())
@@ -1200,7 +1221,14 @@ def _(
 
 
 @app.cell
-def _(DIR_SUBAGENTES, ds, llm_estandar_obj, llm_principal, mo, registro_tools):
+def _(
+    DIR_SUBAGENTES,
+    ds,
+    llm_estandar_obj,
+    llm_razonamiento_obj,
+    mo,
+    registro_tools,
+):
     # Estado reactivo: incrementarlo desde el panel constructor fuerza recarga
     obtener_version_reparto, marcar_version_reparto = mo.state(0)
 
@@ -1211,10 +1239,17 @@ def _(DIR_SUBAGENTES, ds, llm_estandar_obj, llm_principal, mo, registro_tools):
         for sub in crudos:
             sub = dict(sub)
             alias = sub.pop("model_alias", None)
-            if alias == "estandar" and llm_estandar_obj is not None:
-                sub["model"] = llm_estandar_obj
-            elif alias == "razonamiento" and llm_principal is not None:
-                sub["model"] = llm_principal
+            if alias == "estandar":
+                if llm_estandar_obj is not None:
+                    sub["model"] = llm_estandar_obj
+            elif alias == "razonamiento":
+                if llm_razonamiento_obj is not None:
+                    sub["model"] = llm_razonamiento_obj
+            elif alias:
+                avisos.append(
+                    f"⚠️ '{sub['name']}': modelo desconocido '{alias}' — "
+                    "hereda del director"
+                )
             # sin alias → hereda el modelo del agente principal
             subagentes.append(sub)
         return subagentes, avisos
@@ -1235,10 +1270,12 @@ def _(
     menu_middlewares,
     middlewares_activos,
     obtener_version_reparto,
+    obtener_version_skills,
     PERSONAJE_BASE,
     uuid,
 ):
     _ = obtener_version_reparto()  # dependencia reactiva: recarga al guardar personajes
+    _ = obtener_version_skills()  # dependencia reactiva: recarga al instalar/recargar skills
     subagentes_cargados, avisos_subagentes = cargar_reparto()
 
     agente_cerebro = None
@@ -1336,10 +1373,10 @@ def _(ds, json, mo):
                 return mo.md(ruta.read_text(encoding="utf-8"))
             if categoria == "html":
                 return mo.Html(ruta.read_text(encoding="utf-8"))
+            # Categoría 'otro' → botón de descarga
+            return mo.download(data=ruta.read_bytes(), filename=ruta.name)
         except Exception as e:
             return mo.callout(mo.md(f"No pude renderizar `{ruta.name}`: {e}"), kind="warn")
-        # Categoría 'otro' → botón de descarga
-        return mo.download(data=ruta.read_bytes(), filename=ruta.name)
 
     return (render_artefacto,)
 
@@ -1538,8 +1575,10 @@ def _(
             if isinstance(salida, dict) and salida.get("__interrupt__"):
                 yield (
                     "⏸️ **Agente pausado — esperando aprobación humana.**\n\n"
-                    "Desactiva el middleware *Humano en el Bucle* en el panel de control "
-                    "si no quieres aprobar manualmente cada acción."
+                    "Esto ocurre si tienes activado *Humano en el Bucle* (pausa en "
+                    "`recordar`/`olvidar`/búsquedas) o *Filesystem Protegido* (pausa en "
+                    "`write_file`/`edit_file`). Desactiva el switch correspondiente en el "
+                    "panel de control si no quieres aprobar manualmente cada acción."
                 )
                 return
 
@@ -1591,7 +1630,7 @@ def _(mo):
     ---
     ## 💬 Chat con el Agente
 
-    Interactúa directamente con el Cerebro en el Frasco. Usa los prompts sugeridos
+    Interactúa directamente con el Agente Profundo. Usa los prompts sugeridos
     para explorar las capacidades de memoria, búsqueda web y reflexión autónoma.
     """)
     return
@@ -1631,8 +1670,8 @@ def _(mo):
     (**progressive disclosure**). Instala desde el marketplace escribiendo un
     nombre corto (`pdf`), una URL de carpeta GitHub o una URL raw a un `SKILL.md`.
 
-    *Nota: tras instalar una skill nueva, reinicia el kernel o pulsa "Recargar" y
-    reejecuta la celda del agente para que DeepAgents relea `skills/`.*
+    *Nota: al instalar una skill o pulsar "Recargar", el agente se reconstruye
+    automáticamente para que DeepAgents relea `skills/`.*
     """)
     return
 
@@ -1650,15 +1689,26 @@ def _(mo):
 
 
 @app.cell
+def _(mo):
+    # Estado reactivo: incrementarlo fuerza la reconstrucción del agente
+    # (mismo patrón que obtener_version_reparto/marcar_version_reparto).
+    obtener_version_skills, marcar_version_skills = mo.state(0)
+    return marcar_version_skills, obtener_version_skills
+
+
+@app.cell
 def _(
     DIR_SKILLS,
     ds,
+    marcar_version_skills,
     mo,
+    obtener_version_skills,
     ui_boton_instalar,
     ui_boton_recargar_skills,
     ui_fuente_skill,
 ):
-    _ = ui_boton_recargar_skills.value  # dependencia reactiva
+    if ui_boton_recargar_skills.value:
+        marcar_version_skills(obtener_version_skills() + 1)
 
     _msg_instalacion = ""
     if ui_boton_instalar.value and ui_fuente_skill.value.strip():
@@ -1666,6 +1716,8 @@ def _(
             _msg_instalacion = ds.instalar_skill_desde_fuente(
                 ui_fuente_skill.value.strip(), None, DIR_SKILLS
             )
+            if _msg_instalacion.startswith("✅"):
+                marcar_version_skills(obtener_version_skills() + 1)
         except Exception as _e:
             _msg_instalacion = f"❌ Error: {_e}"
 
@@ -1775,25 +1827,31 @@ def _(
     _msg_reparto = ""
     if ui_boton_guardar_sub.value:
         if ui_sub_nombre.value.strip() and ui_sub_persona.value.strip():
-            ds.guardar_subagente_md(
-                DIR_SUBAGENTES,
-                name=ui_sub_nombre.value.strip(),
-                description=ui_sub_descripcion.value.strip() or ui_sub_nombre.value,
-                persona=ui_sub_persona.value,
-                tools=list(ui_sub_tools.value),
-                model=ui_sub_modelo.value or None,
-            )
-            marcar_version_reparto(obtener_version_reparto() + 1)
-            _msg_reparto = f"✅ Personaje '{ui_sub_nombre.value}' guardado — agente reconstruido."
+            try:
+                ds.guardar_subagente_md(
+                    DIR_SUBAGENTES,
+                    name=ui_sub_nombre.value.strip(),
+                    description=ui_sub_descripcion.value.strip() or ui_sub_nombre.value,
+                    persona=ui_sub_persona.value,
+                    tools=list(ui_sub_tools.value),
+                    model=ui_sub_modelo.value or None,
+                )
+                marcar_version_reparto(obtener_version_reparto() + 1)
+                _msg_reparto = f"✅ Personaje '{ui_sub_nombre.value}' guardado — agente reconstruido."
+            except ValueError as _e:
+                _msg_reparto = f"❌ {_e}"
         else:
             _msg_reparto = "❌ Nombre y persona son obligatorios."
 
     if ui_boton_eliminar_sub.value and ui_sub_eliminar.value.strip():
-        if ds.eliminar_subagente_md(DIR_SUBAGENTES, ui_sub_eliminar.value.strip()):
-            marcar_version_reparto(obtener_version_reparto() + 1)
-            _msg_reparto = f"🗑️ Personaje '{ui_sub_eliminar.value}' eliminado."
-        else:
-            _msg_reparto = f"❌ No existe '{ui_sub_eliminar.value}'."
+        try:
+            if ds.eliminar_subagente_md(DIR_SUBAGENTES, ui_sub_eliminar.value.strip()):
+                marcar_version_reparto(obtener_version_reparto() + 1)
+                _msg_reparto = f"🗑️ Personaje '{ui_sub_eliminar.value}' eliminado."
+            else:
+                _msg_reparto = f"❌ No existe '{ui_sub_eliminar.value}'."
+        except ValueError as _e:
+            _msg_reparto = f"❌ {_e}"
 
     _formulario = mo.vstack(
         [
@@ -2144,16 +2202,23 @@ def _(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("### 🛠️ Editor de Herramientas del Estudiante")
+    return
 
+
+@app.cell
+def _(mo):
     # Editor de código para que el estudiante defina su herramienta
     editor_herramienta = mo.ui.code_editor(
-        value="""from langchain.tools import tool
-        def mi_nueva_herramienta(pregunta: str) -> str:
-        \"\"\"Describe aquí qué hace tu herramienta.\"\"\"
-        """,
+        value='''from langchain.tools import tool
+
+@tool
+def mi_nueva_herramienta(pregunta: str) -> str:
+    """Describe aquí qué hace tu herramienta."""
+    return f"Procesé: {pregunta}"
+''',
         label="Escribe tu herramienta aquí:",
         language="python",
     )

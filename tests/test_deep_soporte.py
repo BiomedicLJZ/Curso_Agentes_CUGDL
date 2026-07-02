@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 import deep_soporte as ds
 
 
@@ -336,6 +338,19 @@ def test_eliminar_subagente(tmp_path):
     ds.guardar_subagente_md(tmp_path, "x", "d", "persona", [], None)
     assert ds.eliminar_subagente_md(tmp_path, "x") is True
     assert ds.eliminar_subagente_md(tmp_path, "x") is False
+
+
+def test_guardar_subagente_nombre_traversal_lanza_valueerror(tmp_path):
+    with pytest.raises(ValueError):
+        ds.guardar_subagente_md(
+            tmp_path, "../fuera", "descripcion", "persona", [], None
+        )
+    assert not (tmp_path.parent / "fuera.md").exists()
+
+
+def test_eliminar_subagente_nombre_traversal_lanza_valueerror(tmp_path):
+    with pytest.raises(ValueError):
+        ds.eliminar_subagente_md(tmp_path, "../fuera")
 
 
 def test_sembrar_subagente_ejemplo(tmp_path):
