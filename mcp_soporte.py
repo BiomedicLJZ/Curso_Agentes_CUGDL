@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 from deep_soporte import _nombre_seguro
@@ -152,12 +153,24 @@ def dialogo_crudo_stdio(
     agente usa langchain-mcp-adapters, que gestiona sesiones, reintentos y
     versiones por nosotros.
 
-    Envía todas las peticiones de golpe (el servidor las procesa en orden),
-    cierra stdin y recolecta las respuestas. Las notificaciones (mensajes sin
-    "id") no generan respuesta — por eso el resultado puede ser más corto que
-    la entrada.
+    Envía todas las peticiones y MANTIENE stdin ABIERTO hasta recibir todas las
+    respuestas esperadas (una por cada petición con "id"). Esto es clave: un
+    servidor MCP stdio interpreta el EOF de stdin como orden de apagado y
+    CANCELA cualquier petición en vuelo — típicamente la última y más pesada
+    (p. ej. un tools/call), cuya respuesta se perdería si cerrásemos stdin de
+    inmediato. Por eso un hilo lector recolecta stdout mientras stdin sigue
+    abierto, y sólo matamos el proceso cuando ya llegó todo (o vence el timeout).
+
+    Las notificaciones (mensajes sin "id") no generan respuesta — por eso el
+    resultado puede ser más corto que la entrada.
+
+    Contrato:
+    - Devuelve las respuestas en el ORDEN DE LLEGADA.
+    - Si llegaron ALGUNAS pero no todas las esperadas dentro del timeout,
+      devuelve la lista PARCIAL (el llamador dibuja las que faltan).
+    - Lanza TimeoutError SÓLO cuando no llegó NADA.
     """
-    entrada = "".join(json.dumps(p) + "\n" for p in peticiones)
+    esperadas = {p["id"] for p in peticiones if "id" in p}
     proc = subprocess.Popen(
         comando,
         stdin=subprocess.PIPE,
@@ -166,19 +179,31 @@ def dialogo_crudo_stdio(
         text=True,
         encoding="utf-8",
     )
+    respuestas: list[dict] = []
+
+    def _leer():
+        for linea in proc.stdout:
+            try:
+                msg = json.loads(linea)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(msg, dict) and "id" in msg:
+                respuestas.append(msg)
+                if {m["id"] for m in respuestas} >= esperadas:
+                    break
+
+    hilo = threading.Thread(target=_leer, daemon=True)
+    hilo.start()
     try:
-        salida, _ = proc.communicate(input=entrada, timeout=timeout)
-    except subprocess.TimeoutExpired:
+        for p in peticiones:
+            proc.stdin.write(json.dumps(p) + "\n")
+        proc.stdin.flush()
+        hilo.join(timeout)
+    finally:
         proc.kill()
+        proc.wait()  # reap: sin zombies (corrige también un minor previo)
+    if not respuestas:
         raise TimeoutError(
             f"El servidor MCP no respondió en {timeout}s: {comando}"
-        ) from None
-    respuestas = []
-    for linea in salida.splitlines():
-        try:
-            msg = json.loads(linea)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(msg, dict) and "id" in msg:
-            respuestas.append(msg)
+        )
     return respuestas

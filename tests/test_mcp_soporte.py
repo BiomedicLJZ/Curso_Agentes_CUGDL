@@ -180,15 +180,30 @@ def test_integracion_servidor_demo_lista_tools():
         },
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "consultar_glosario",
+                "arguments": {"termino": "mcp"},
+            },
+        },
     ]
     respuestas = ms.dialogo_crudo_stdio(
         [sys.executable, str(servidor)], peticiones, timeout=30.0
     )
-    assert len(respuestas) == 2  # initialize + tools/list (la notificación no responde)
-    catalogo = respuestas[1]["result"]["tools"]
+    # initialize + tools/list + tools/call (la notificación no responde).
+    # Con stdin abierto, la petición pesada id=3 ya NO se cancela por EOF.
+    assert len(respuestas) == 3
+    por_id = {r["id"]: r for r in respuestas}
+    catalogo = por_id[2]["result"]["tools"]
     nombres = {t["name"] for t in catalogo}
     assert nombres == {
         "consultar_glosario",
         "estadisticas_curso",
         "convertir_unidades",
     }
+    # La respuesta del tools/call trae la definición del glosario ("USB-C").
+    contenido = json.dumps(por_id[3]["result"], ensure_ascii=False)
+    assert "USB-C" in contenido
