@@ -171,6 +171,9 @@ def dialogo_crudo_stdio(
     - Lanza TimeoutError SÓLO cuando no llegó NADA.
     """
     esperadas = {p["id"] for p in peticiones if "id" in p}
+    if not esperadas:
+        # Solo notificaciones: no hay respuestas que esperar.
+        return []
     proc = subprocess.Popen(
         comando,
         stdin=subprocess.PIPE,

@@ -1,4 +1,5 @@
-"""Tests de mcp_soporte.py — config MCP pura, sin red ni subprocess."""
+"""Tests de mcp_soporte.py — unit tests sin red ni subprocess; incluye UNA
+prueba de integración que lanza servidor_mcp.py real (se salta sin `mcp`)."""
 
 import json
 
@@ -150,6 +151,14 @@ def test_sembrar_config_idempotente(tmp_path):
     ms.sembrar_config_mcp(ruta)  # segunda llamada NO pisa
     servidores2, _ = ms.cargar_config_mcp(ruta)
     assert "extra" in servidores2
+
+
+def test_dialogo_solo_notificaciones_devuelve_vacio():
+    respuestas = ms.dialogo_crudo_stdio(
+        ["comando-inexistente"],
+        [{"jsonrpc": "2.0", "method": "notifications/initialized"}],
+    )
+    assert respuestas == []
 
 
 # ── dialogo_crudo_stdio + servidor demo (integración) ────────────────────────

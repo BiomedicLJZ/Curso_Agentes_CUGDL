@@ -391,8 +391,10 @@ def _(mo):
 
     **Dónde verlo en este notebook:** recorre las **celdas de tools** para leer los
     docstrings reales que educan al modelo, y baja hasta el **🛠️ Editor de Herramientas
-    del Estudiante** al final, donde puedes escribir tu propia función y verla convertirse
-    en una mano nueva del agente.
+    del Estudiante** al final, donde el editor **compila y valida** tu tool con el
+    decorador `@tool`. Para que el agente la use de verdad hace falta **reconstruir el
+    agente** (el mismo patrón de recarga reactiva que usan Skills, Reparto y MCP): hoy el
+    notebook lo deja como ejercicio.
     """
             ),
             "🗺️ Diagrama": mo.mermaid(
@@ -564,7 +566,6 @@ def _():
     from langchain.tools import tool
     from langchain.agents.middleware import (
         dynamic_prompt,
-        SummarizationMiddleware,
         ContextEditingMiddleware,
         HumanInTheLoopMiddleware,
         ModelCallLimitMiddleware,
@@ -1637,12 +1638,20 @@ async def _(
     tools_mcp = []
     estado_mcp = {}
 
-    for _nombre in _servidores:
-        if _nombre not in _conexiones:
+    for _nombre, _cfg_crudo in _servidores.items():
+        if _nombre in _conexiones:
+            continue
+        if isinstance(_cfg_crudo, dict):
             estado_mcp[_nombre] = {
                 "estado": "⚪ deshabilitado",
                 "tools": [],
                 "detalle": "enabled: false en mcp_config.json",
+            }
+        else:
+            estado_mcp[_nombre] = {
+                "estado": "🔴 config inválida",
+                "tools": [],
+                "detalle": "la config debe ser un objeto JSON {clave: valor}",
             }
 
     if _conexiones and not ADAPTERS_MCP:
@@ -2435,6 +2444,8 @@ def _(
         marcar_version_mcp(obtener_version_mcp() + 1)
 
     _msg_mcp = ""
+    if ui_boton_guardar_mcp.value and not ui_mcp_nombre.value.strip():
+        _msg_mcp = "❌ El nombre del servidor es obligatorio."
     if ui_boton_guardar_mcp.value and ui_mcp_nombre.value.strip():
         _cfg = {"transport": ui_mcp_transporte.value, "enabled": True}
         if ui_mcp_transporte.value == "stdio":
@@ -3298,7 +3309,11 @@ def _(herramienta_dinamica, herramientas_totales):
         herramientas_agente = herramientas_totales + [herramienta_dinamica]
     else:
         herramientas_agente = herramientas_totales
-    return
+    # NOTA educativa: esta lista NO se inyecta automáticamente al agente vivo.
+    # Reconstruir el grafo DeepAgents en cada edición sería costoso; el patrón
+    # correcto (run_button + mo.state, como Skills/Reparto/MCP) queda como
+    # ejercicio para el estudiante.
+    return (herramientas_agente,)
 
 
 @app.cell
