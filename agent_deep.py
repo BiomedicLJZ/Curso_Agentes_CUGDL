@@ -211,6 +211,324 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: ¿Qué es un Agente de IA?": mo.md(
+                r"""
+    Imagina un **cerebro dentro de un frasco** 🧠. Es brillante, sabe muchísimo y
+    razona de maravilla… pero está flotando en líquido, sin ojos, sin manos, sin
+    forma de tocar el mundo. Eso es exactamente un LLM por sí solo: una máquina que
+    produce texto. Puede *hablar* de buscar el clima, pero no puede salir a buscarlo.
+    Un **agente** es lo que le pones alrededor a ese cerebro para darle manos, ojos y
+    voluntad de actuar.
+
+    Concretamente, un agente es un **LLM + herramientas (tools) + un bucle** que
+    decide, actúa y observa hasta resolver la tarea. Ese bucle tiene nombre: **ReAct**
+    (Reason + Act), y funciona así, paso a paso:
+
+    1. **Razonar** 🤔 — el LLM lee tu petición y decide qué hacer.
+    2. **Actuar** 🔧 — si le falta información, llama a una herramienta.
+    3. **Observar** 👁️ — recibe el resultado de esa herramienta.
+    4. **Repetir** 🔁 — con el nuevo dato, vuelve a razonar; ¿basta o falta más?
+    5. **Responder** 💬 — cuando ya tiene contexto suficiente, redacta la respuesta.
+
+    Veámoslo con un ejemplo. Le preguntas: *"¿qué tiempo hace en Guadalajara?"*. El
+    cerebro en el frasco **no lo sabe** — el clima de hoy no estaba en sus datos de
+    entrenamiento. Aquí un chatbot cualquiera alucinaría o se disculparía. El agente,
+    en cambio, razona "necesito datos frescos", **actúa** llamando a `buscar_en_red`,
+    **observa** los resultados que vuelven de la web y solo entonces **responde** con
+    información real y fundamentada. Esa es la diferencia clave: **un chatbot responde
+    con lo que ya sabe; un agente puede ir a buscar lo que no sabe.**
+
+    ¿Quién orquesta este baile? Aquí entran dos piezas del ecosistema. **LangGraph**
+    implementa el bucle como un **grafo de estados**: nodos que representan "pensar",
+    "usar herramienta", "terminar", y las flechas que deciden a dónde ir después de
+    cada paso. **LangChain** aporta las abstracciones de alto nivel — las tools, los
+    tipos de mensajes, la conexión con el modelo — para que no tengas que cablear todo
+    a mano. Juntos convierten un cerebro pasivo en un trabajador autónomo.
+
+    **Dónde verlo en este notebook:** abre el panel **🗺️ Arquitectura Dinámica del
+    Agente** para ver el grafo real de LangGraph que ejecuta este ciclo; usa el **chat**
+    para pedirle algo que no pueda saber (como el clima de hoy) y observa cómo sale a
+    buscarlo; y revisa la tool **`buscar_en_red`** en las celdas de herramientas para
+    ver el "brazo" que le permite alcanzar la web.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart TD
+    U["👤 Usuario"] --> R{"🧠 Razonar<br/>(el LLM decide)"}
+    R -->|"necesita datos"| A["🔧 Actuar<br/>(llamar una tool)"]
+    A --> O["👁️ Observar<br/>(resultado de la tool)"]
+    O --> R
+    R -->|"contexto suficiente"| F["💬 Responder"]
+    F --> U
+"""
+            ),
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Memoria Dual — cuaderno y biblioteca": mo.md(
+                r"""
+    Piensa en dos formas de recordar. Tienes un **cuaderno de notas** 📓 que llevas
+    durante una conversación: apuntas lo que se va diciendo y lo consultas sin salir de
+    esa charla. Y tienes una **biblioteca personal** 📚 donde guardas lo que quieres
+    conservar para siempre: la usas hoy, la seguirás usando dentro de un año. Un buen
+    agente necesita **las dos**, porque tienen trabajos distintos.
+
+    El punto de partida incómodo es este: **los LLM son amnésicos**. Cada llamada al
+    modelo empieza literalmente de cero; no "recuerda" el turno anterior. Toda la
+    memoria que percibes es en realidad **contexto que alguien vuelve a inyectar** en
+    cada petición. Si nadie reinyecta, no hay memoria. Por eso construimos capas.
+
+    La **Capa 1 (corto plazo)** es el *checkpointer* (`SqliteSaver`): guarda el hilo
+    turno a turno en disco. Cada sesión tiene su `thread_id` — su propio cuaderno —, y
+    al cambiar de hilo empiezas con la libreta en blanco. Sirve para "¿qué te dije hace
+    veinte mensajes?" dentro de la misma charla.
+
+    La **Capa 2 (largo plazo)** es el *store* (`AlmacenPersistenteSQLite`): guarda
+    **hechos duraderos** — tus preferencias, tus proyectos, tus gustos — y persisten
+    entre **todas** las sesiones. Funciona con *write-through*: mantiene los datos en
+    RAM para buscar rápido, pero cada escritura baja también a SQLite para sobrevivir a
+    los reinicios. Y busca de forma **híbrida**, combinando tres estrategias: la
+    **semántica** (embeddings + similitud coseno) entiende el significado aunque cambies
+    las palabras; la **keyword** (`LIKE`) atrapa el término exacto que la semántica a
+    veces pasa por alto; y la **recencia** (`ORDER BY`) prioriza lo más nuevo. Cada una
+    falla sola — la semántica ignora nombres literales, la keyword no entiende sinónimos,
+    la recencia olvida lo importante pero viejo — pero **juntas se cubren los huecos**.
+
+    La **Capa 3 (reflexión autónoma)** cierra el sistema: después de cada turno, el
+    modelo de respaldo relee la conversación, **extrae hechos nuevos y los guarda solo**,
+    sin que tú se lo pidas. Y `@dynamic_prompt` es el pegamento final: **antes** de cada
+    turno inyecta en el system prompt los recuerdos relevantes, para que el cerebro
+    amnésico despierte ya sabiendo quién eres.
+
+    **Dónde verlo en este notebook:** el **🗄️ Inspector de Memoria a Largo Plazo** te
+    deja ver y buscar los hechos de la Capa 2; el **🔍 Visor de Inyección de Memoria
+    Dinámica** te muestra exactamente qué recuerdos se cuelan en el prompt antes de
+    responder; y las tools **`recordar`**, **`evocar`** y **`olvidar`** son las que
+    escriben, consultan y borran esa biblioteca personal.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart LR
+    subgraph CP["📓 Corto plazo — el hilo"]
+        CK[("SqliteSaver<br/>checkpointer")]
+    end
+    subgraph LP["📚 Largo plazo — los hechos"]
+        ST[("AlmacenPersistenteSQLite<br/>store + embeddings")]
+    end
+    AG["🤖 Agente"] -->|"mensajes del turno"| CK
+    AG -->|"recordar / evocar / olvidar"| ST
+    RF["🪞 Reflexión autónoma<br/>(tras cada turno)"] -->|"extrae hechos"| ST
+    ST -->|"@dynamic_prompt inyecta<br/>recuerdos relevantes"| AG
+"""
+            ),
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Tools — las manos del cerebro": mo.md(
+                r"""
+    Si el LLM es el cerebro en el frasco, las **tools son sus manos** 🖐️. Son lo que le
+    permite tocar el mundo: buscar en la web, guardar un recuerdo, dibujar un gráfico.
+    Sin ellas, el agente solo piensa; con ellas, actúa.
+
+    Técnicamente una tool es **una función de Python normal** con el decorador `@tool`
+    encima. Pero hay un detalle crucial que sorprende a casi todo el mundo: **el LLM
+    nunca ejecuta código**. Lo que hace es *emitir una petición* — un `tool_call` en
+    formato JSON que dice "quiero llamar a `buscar_en_red` con este argumento" — y es un
+    **ejecutor** aparte quien corre la función Python de verdad. El modelo pide; el
+    runtime obedece. Esa separación es lo que hace el sistema seguro y depurable.
+
+    ¿Y cómo sabe el LLM qué herramienta usar y cómo? El contrato son **el docstring +
+    los type hints**. El modelo lee la **descripción** (el docstring) para decidir
+    *cuándo* invocar la tool, y lee el **schema de argumentos** (inferido de los type
+    hints) para saber *cómo* rellenarla. La consecuencia práctica es contundente: **un
+    docstring malo produce una tool que nunca se usa o se usa mal.** Escribir buenas
+    descripciones no es cosmética, es programar el criterio del agente.
+
+    Cuando la función termina, su resultado no vuelve como un valor cualquiera: regresa
+    envuelto en un **`ToolMessage`** que el LLM lee en el siguiente paso del ciclo ReAct
+    — exactamente el "Observar" del Concepto 1.
+
+    Este notebook trae un inventario de tools organizado por familias: de **memoria**
+    (`recordar`, `evocar`, `olvidar`), de **web** (`buscar_en_red`,
+    `investigar_a_fondo`, `extraer_pagina_web`), de **academia** (`search_arxiv`), de
+    **plataforma** (`instalar_skill`) y **multimodal** (`generar_grafico`). Cada familia
+    le da al agente un tipo de "mano" distinto.
+
+    Una sutileza elegante para cerrar: cuando algo falla **dentro** de una tool, el error
+    se devuelve como **texto** (no como una excepción que rompe todo). ¿Por qué? Porque
+    así el agente **lee el error, entiende qué salió mal y puede autocorregirse** en el
+    siguiente turno, en lugar de estrellarse.
+
+    **Dónde verlo en este notebook:** recorre las **celdas de tools** para leer los
+    docstrings reales que educan al modelo, y baja hasta el **🛠️ Editor de Herramientas
+    del Estudiante** al final, donde puedes escribir tu propia función y verla convertirse
+    en una mano nueva del agente.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+sequenceDiagram
+    participant U as 👤 Usuario
+    participant L as 🧠 LLM
+    participant E as ⚙️ Ejecutor
+    participant T as 🔧 buscar_en_red()
+    U->>L: "¿Qué tiempo hace en Guadalajara?"
+    L->>E: tool_call: buscar_en_red("clima Guadalajara")
+    E->>T: ejecuta la función Python
+    T-->>E: resultados de Tavily
+    E-->>L: ToolMessage con el resultado
+    L-->>U: respuesta fundamentada en datos
+"""
+            ),
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Middlewares — las aduanas del pipeline": mo.md(
+                r"""
+    Imagina que cada petición al agente es un viajero que cruza varias **aduanas** 🛃
+    antes de llegar a su destino. En cada frontera, un oficial puede **inspeccionar**,
+    **modificar** o incluso **detener** el paso. Eso es un middleware: una capa que
+    envuelve al agente y por la que la petición tiene que pasar en su camino de ida y de
+    vuelta.
+
+    La regla de orden es sencilla: los middlewares **se aplican en el orden de la lista**,
+    y el **primero de la lista es la capa más externa** — la primera aduana que cruzas al
+    entrar y la última al salir. Cambiar el orden cambia el comportamiento.
+
+    Este notebook apila varias capas, y conviene que sepas el propósito de cada una en una
+    frase: **memoria dinámica** inyecta tus recuerdos en el prompt; **resumen** (el
+    automático de deepagents) comprime el histórico cuando crece demasiado; **edición de
+    contexto** poda resultados de tools para liberar espacio; **humano en el bucle** pausa
+    y pide tu aprobación antes de acciones críticas; **límites** de modelo/tools ponen
+    topes para que no se desboque; **reintentos** vuelve a intentar ante fallos
+    transitorios; **fallback** cambia a un modelo de respaldo si el principal cae;
+    **selector de tools** filtra qué herramientas ve el modelo; y **PII** protege datos
+    personales sensibles.
+
+    Aquí hay un **gotcha real** que te ahorrará un dolor de cabeza: en este notebook **no
+    añadimos un `SummarizationMiddleware` manual ni un `TodoListMiddleware`**. ¿Por qué?
+    Porque **deepagents ya los trae de serie**. Si duplicas el de resumen, obtienes un
+    `AssertionError`; y la planificación ya la resuelve deepagents con `write_todos`, así
+    que un TodoList manual sobra. Menos es más cuando el framework ya te lo da.
+
+    Lo mejor es que todo esto es **vivo**: el panel de switches **reconstruye el pipeline
+    en tiempo real** al activar o desactivar capas, y el diagrama Mermaid se redibuja para
+    reflejar exactamente qué aduanas están abiertas en este momento. Puedes *ver* cómo
+    cambia la arquitectura mientras juegas con los interruptores.
+
+    **Dónde verlo en este notebook:** abre el **⚙️ Panel de Control del Agente** para
+    encender y apagar middlewares con los switches, mira la lista **"Pipeline activo"**
+    que enumera las capas vigentes, y contempla el **🗺️ Arquitectura Dinámica del
+    Agente** para ver el grafo real que resulta de tu configuración.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart LR
+    IN["📨 Petición"] --> M1["🧠 memoria<br/>dinámica"]
+    M1 --> M2["📄 resumen<br/>(deepagents)"]
+    M2 --> M3["✂️ edición de<br/>contexto"]
+    M3 --> M4["🙋 humano en<br/>el bucle"]
+    M4 --> M5["🛑 límites"]
+    M5 --> M6["♻️ reintentos<br/>+ fallback"]
+    M6 --> NU["🤖 LLM + tools"]
+    NU --> OUT["📬 Respuesta"]
+"""
+            ),
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Deep Agents — el director de orquesta": mo.md(
+                r"""
+    Un agente plano es como un músico talentoso que **improvisa** sobre la marcha: brilla
+    en piezas cortas, pero en una obra larga pierde el hilo. Un **deep agent** es un
+    **director de orquesta con partitura** 🎼: no solo toca, sino que **planifica, anota y
+    delega**. Esa es la promesa de esta arquitectura.
+
+    En código, `create_deep_agent()` **envuelve** a `create_agent()` y le añade **cuatro
+    superpoderes de serie**: **planificación** (la tool `write_todos`), **filesystem**
+    (`ls` / `read_file` / `write_file` / `edit_file` sobre un backend real),
+    **subagentes** (la tool `task`, para delegar en personajes con contexto propio) y
+    **skills** (progressive disclosure: carga instrucciones solo cuando las necesita).
+
+    ¿Por qué importa la planificación? Porque **los agentes planos fallan en tareas
+    largas al perder el plan** dentro de una ventana de contexto que se llena y se resume.
+    El truco del deep agent es **externalizar el plan** a una lista de tareas que vive
+    *fuera* del contexto del LLM: aunque el modelo olvide, el todo-list recuerda.
+
+    El filesystem es igual de potente. `FilesystemBackend(root_dir=...)` hace que el
+    agente vea **nuestro proyecto real** — no un sandbox de juguete, sino los archivos de
+    verdad. Como eso es peligroso, existe el switch **Filesystem Protegido**: al activarlo,
+    `write_file` y `edit_file` quedan bajo `interrupt_on` y **piden tu aprobación** antes
+    de tocar nada. Poder con freno de mano.
+
+    Hay dos cosas que `create_deep_agent()` **añade automáticamente** y conviene tener
+    presentes: un **`SummarizationMiddleware`** (por eso en el Concepto 4 dijimos que
+    duplicarlo da `AssertionError`) y un **system prompt de andamiaje** propio. Ese
+    segundo detalle explica una decisión de diseño de este notebook: nuestro middleware de
+    memoria **appendea** al prompt en vez de reemplazarlo, para no borrar el andamiaje que
+    deepagents necesita.
+
+    Y lo mejor: nada de esto rompe lo anterior. El `checkpointer` y el `store` se le pasan
+    **tal cual**, así que **toda la memoria dual del Concepto 2 sigue funcionando debajo**.
+    Los superpoderes se suman; no sustituyen.
+
+    **Dónde verlo en este notebook:** busca la celda **`create_deep_agent`** para ver el
+    ensamblaje real; activa el switch **📁 Filesystem Protegido** en el Panel de Control y
+    observa cómo cambia el comportamiento de escritura; y en el **chat** pídele *"escribe
+    un plan con write_todos"* para ver la planificación integrada en acción.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart TD
+    CDA["create_deep_agent()"] --> P["🗺️ write_todos<br/>planificación integrada"]
+    CDA --> FS["📁 filesystem<br/>ls · read · write · edit"]
+    CDA --> TK["🎭 task<br/>delegar en subagentes"]
+    CDA --> SK["🧩 skills<br/>progressive disclosure"]
+    CDA --> SUM["📄 Summarization<br/>automático"]
+    P --> LG["🕸️ Grafo LangGraph resultante"]
+    FS --> LG
+    TK --> LG
+    SK --> LG
+    SUM --> LG
+"""
+            ),
+        }
+    )
+    return
+
+
 @app.cell
 def _():
     import os
