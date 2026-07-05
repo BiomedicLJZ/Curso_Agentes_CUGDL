@@ -1868,6 +1868,179 @@ def _(
 def _(mo):
     mo.md(r"""
     ---
+    ## 🔌 Panel MCP — Servidores de Herramientas Externas
+
+    MCP (*Model Context Protocol*) es el **puerto USB-C de los agentes**: cualquier
+    servidor compatible enchufa sus tools al agente sin tocar el código del notebook.
+    La configuración vive en `./mcp_config.json` — el mismo formato que
+    `claude_desktop_config.json`, así que lo que aprendas aquí sirve para Claude
+    Desktop, Claude Code, Cursor y el resto del ecosistema.
+
+    > ⏳ *La primera conexión a un servidor `npx`/`uvx` puede tardar (descarga el
+    > paquete). El descubrimiento tiene un timeout de 15 s por servidor.*
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    ui_mcp_nombre = mo.ui.text(label="**Nombre**", placeholder="filesystem")
+    ui_mcp_transporte = mo.ui.dropdown(
+        options=["stdio", "http", "sse"], value="stdio", label="**Transporte**"
+    )
+    ui_mcp_comando = mo.ui.text(
+        label="**Comando** (stdio)", placeholder="npx · uvx · python"
+    )
+    ui_mcp_args = mo.ui.text_area(
+        label="**Argumentos** (stdio) — uno por línea",
+        placeholder="-y\n@modelcontextprotocol/server-filesystem\nD:/ruta/permitida",
+        rows=3,
+    )
+    ui_mcp_url = mo.ui.text(
+        label="**URL** (http/sse)", placeholder="http://localhost:8000/mcp"
+    )
+    ui_mcp_env = mo.ui.text_area(
+        label="**Variables de entorno** — CLAVE=valor por línea (opcional)",
+        placeholder="API_KEY=abc123",
+        rows=2,
+    )
+    ui_boton_guardar_mcp = mo.ui.run_button(label="💾 Guardar servidor")
+    ui_mcp_eliminar = mo.ui.text(
+        label="**Eliminar servidor** (nombre)", placeholder="filesystem"
+    )
+    ui_boton_eliminar_mcp = mo.ui.run_button(label="🗑️ Eliminar")
+    ui_boton_recargar_mcp = mo.ui.run_button(label="🔄 Recargar servidores")
+    return (
+        ui_boton_eliminar_mcp,
+        ui_boton_guardar_mcp,
+        ui_boton_recargar_mcp,
+        ui_mcp_args,
+        ui_mcp_comando,
+        ui_mcp_eliminar,
+        ui_mcp_env,
+        ui_mcp_nombre,
+        ui_mcp_transporte,
+        ui_mcp_url,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    RUTA_CONFIG_MCP,
+    avisos_mcp,
+    estado_mcp,
+    marcar_version_mcp,
+    mo,
+    ms,
+    obtener_version_mcp,
+    ui_boton_eliminar_mcp,
+    ui_boton_guardar_mcp,
+    ui_boton_recargar_mcp,
+    ui_mcp_args,
+    ui_mcp_comando,
+    ui_mcp_eliminar,
+    ui_mcp_env,
+    ui_mcp_nombre,
+    ui_mcp_transporte,
+    ui_mcp_url,
+):
+    if ui_boton_recargar_mcp.value:
+        marcar_version_mcp(obtener_version_mcp() + 1)
+
+    _msg_mcp = ""
+    if ui_boton_guardar_mcp.value and ui_mcp_nombre.value.strip():
+        _cfg = {"transport": ui_mcp_transporte.value, "enabled": True}
+        if ui_mcp_transporte.value == "stdio":
+            _cfg["command"] = ui_mcp_comando.value.strip()
+            _cfg["args"] = [
+                _l.strip()
+                for _l in ui_mcp_args.value.splitlines()
+                if _l.strip()
+            ]
+        else:
+            _cfg["url"] = ui_mcp_url.value.strip()
+        _env = ms.parsear_env(ui_mcp_env.value)
+        if _env:
+            _cfg["env"] = _env
+        try:
+            _msg_mcp = ms.agregar_servidor(
+                RUTA_CONFIG_MCP, ui_mcp_nombre.value.strip(), _cfg
+            )
+            marcar_version_mcp(obtener_version_mcp() + 1)
+        except ValueError as _e:
+            _msg_mcp = f"❌ {_e}"
+
+    if ui_boton_eliminar_mcp.value and ui_mcp_eliminar.value.strip():
+        try:
+            if ms.eliminar_servidor(
+                RUTA_CONFIG_MCP, ui_mcp_eliminar.value.strip()
+            ):
+                marcar_version_mcp(obtener_version_mcp() + 1)
+                _msg_mcp = f"🗑️ Servidor '{ui_mcp_eliminar.value}' eliminado."
+            else:
+                _msg_mcp = f"❌ No existe '{ui_mcp_eliminar.value}'."
+        except ValueError as _e:
+            _msg_mcp = f"❌ {_e}"
+
+    _formulario = mo.vstack(
+        [
+            mo.hstack([ui_mcp_nombre, ui_mcp_transporte], widths=[2, 1]),
+            mo.hstack([ui_mcp_comando, ui_mcp_url], widths=[1, 1]),
+            ui_mcp_args,
+            ui_mcp_env,
+            mo.hstack(
+                [
+                    ui_boton_guardar_mcp,
+                    ui_mcp_eliminar,
+                    ui_boton_eliminar_mcp,
+                    ui_boton_recargar_mcp,
+                ],
+                widths=[1, 2, 1, 1],
+            ),
+        ]
+    )
+
+    _bloques = [_formulario]
+    if _msg_mcp:
+        _bloques.append(
+            mo.callout(
+                mo.md(_msg_mcp),
+                kind="danger" if _msg_mcp.startswith("❌") else "success",
+            )
+        )
+    for _aviso in avisos_mcp:
+        _bloques.append(mo.callout(mo.md(_aviso), kind="warn"))
+
+    if estado_mcp:
+        _bloques.append(
+            mo.ui.table(
+                [
+                    {
+                        "Servidor": _n,
+                        "Estado": _e["estado"],
+                        "Tools descubiertas": ", ".join(_e["tools"]) or "—",
+                        "Detalle": _e["detalle"] or "—",
+                    }
+                    for _n, _e in estado_mcp.items()
+                ],
+                selection=None,
+            )
+        )
+    else:
+        _bloques.append(
+            mo.callout(
+                mo.md("*(Sin servidores MCP — añade uno arriba)*"), kind="info"
+            )
+        )
+
+    mo.vstack(_bloques)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ---
     ## 🎭 El Reparto de la Obra — Constructor de Subagentes
 
     Cada personaje es un archivo `./subagentes/<nombre>.md` (frontmatter YAML +
@@ -2249,11 +2422,13 @@ def _(
     RUTA_BD_LARGO_PLAZO,
     almacen_memoria,
     ds,
+    estado_mcp,
     middlewares_nombres,
     mo,
     nombre_modelo_activo,
     semantica_activa,
     subagentes_cargados,
+    tools_mcp,
     ui_max_tokens,
     ui_temperatura,
     ui_top_p,
@@ -2311,6 +2486,7 @@ def _(
     | :--- | :--- |
     | **Personajes (subagentes)** | **{len(subagentes_cargados)}** en `{DIR_SUBAGENTES}` |
     | **Skills instaladas** | **{_num_skills}** en `{DIR_SKILLS}` |
+    | **Servidores MCP** | **{len(estado_mcp)}** configurados · **{len(tools_mcp)}** tools externas activas |
     | **Artefactos multimodales** | carpeta `{DIR_ARTEFACTOS}` |
 
     ---
