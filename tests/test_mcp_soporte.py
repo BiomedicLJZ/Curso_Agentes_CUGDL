@@ -150,3 +150,45 @@ def test_sembrar_config_idempotente(tmp_path):
     ms.sembrar_config_mcp(ruta)  # segunda llamada NO pisa
     servidores2, _ = ms.cargar_config_mcp(ruta)
     assert "extra" in servidores2
+
+
+# ── dialogo_crudo_stdio + servidor demo (integración) ────────────────────────
+
+
+def test_integracion_servidor_demo_lista_tools():
+    """Lanza servidor_mcp.py real y verifica el catálogo vía JSON-RPC crudo.
+
+    Se salta si el SDK mcp no está instalado en el entorno de test.
+    """
+    pytest.importorskip("mcp")
+    import sys
+    from pathlib import Path
+
+    servidor = Path(__file__).parent.parent / "servidor_mcp.py"
+    assert servidor.exists()
+
+    peticiones = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test-radiografia", "version": "1.0"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ]
+    respuestas = ms.dialogo_crudo_stdio(
+        [sys.executable, str(servidor)], peticiones, timeout=30.0
+    )
+    assert len(respuestas) == 2  # initialize + tools/list (la notificación no responde)
+    catalogo = respuestas[1]["result"]["tools"]
+    nombres = {t["name"] for t in catalogo}
+    assert nombres == {
+        "consultar_glosario",
+        "estadisticas_curso",
+        "convertir_unidades",
+    }

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "laboratorio": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["servidor_mcp.py"],
+      "enabled": true
+    }
+  }
+}

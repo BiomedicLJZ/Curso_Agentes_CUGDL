@@ -140,3 +140,45 @@ def sembrar_config_mcp(ruta: Path) -> None:
     ruta = Path(ruta)
     if not ruta.exists():
         guardar_config_mcp(ruta, dict(SEMILLA_MCP))
+
+
+def dialogo_crudo_stdio(
+    comando: list[str], peticiones: list[dict], timeout: float = 20.0
+) -> list[dict]:
+    """Habla JSON-RPC CRUDO con un servidor MCP stdio y devuelve sus respuestas.
+
+    ⚠️ SOLO EDUCATIVO — la celda "radiografía" lo usa para enseñar el cable del
+    protocolo (un mensaje JSON por línea sobre stdin/stdout). En producción el
+    agente usa langchain-mcp-adapters, que gestiona sesiones, reintentos y
+    versiones por nosotros.
+
+    Envía todas las peticiones de golpe (el servidor las procesa en orden),
+    cierra stdin y recolecta las respuestas. Las notificaciones (mensajes sin
+    "id") no generan respuesta — por eso el resultado puede ser más corto que
+    la entrada.
+    """
+    entrada = "".join(json.dumps(p) + "\n" for p in peticiones)
+    proc = subprocess.Popen(
+        comando,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        salida, _ = proc.communicate(input=entrada, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise TimeoutError(
+            f"El servidor MCP no respondió en {timeout}s: {comando}"
+        ) from None
+    respuestas = []
+    for linea in salida.splitlines():
+        try:
+            msg = json.loads(linea)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(msg, dict) and "id" in msg:
+            respuestas.append(msg)
+    return respuestas
