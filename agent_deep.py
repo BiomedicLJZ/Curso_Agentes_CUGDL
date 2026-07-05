@@ -2039,6 +2039,136 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
+    ui_boton_radiografia = mo.ui.run_button(label="🔬 Ejecutar radiografía")
+    mo.vstack(
+        [
+            mo.md(r"""
+    ### 🔬 Radiografía del protocolo MCP
+
+    ¿Qué viaja REALMENTE por el cable cuando el agente habla con un servidor?
+    Este botón lanza `servidor_mcp.py` como subproceso y le habla **JSON-RPC
+    crudo** — los mismos bytes que intercambia cualquier cliente MCP del mundo.
+    Verás los 3 pasos del protocolo: el apretón de manos (`initialize`), el
+    catálogo (`tools/list`) y una invocación (`tools/call`).
+
+    *(En producción el agente usa `langchain-mcp-adapters`, que hace esto mismo
+    por nosotros y añade gestión de sesión, reintentos y versiones.)*
+    """),
+            ui_boton_radiografia,
+        ]
+    )
+    return (ui_boton_radiografia,)
+
+
+@app.cell(hide_code=True)
+def _(RAIZ_PROYECTO, json, mo, ms, sys, ui_boton_radiografia):
+    _ANOTACIONES = {
+        1: (
+            "**Paso 1 · initialize — el apretón de manos.** Cliente y servidor "
+            "negocian versión del protocolo y anuncian sus *capabilities* "
+            "(tools, resources, prompts...). Nada funciona antes de esto."
+        ),
+        2: (
+            "**Paso 2 · tools/list — el catálogo.** El servidor publica sus "
+            "tools con nombre, descripción y JSON Schema de argumentos. Es "
+            "EXACTAMENTE la información que el LLM usa para decidir invocarlas "
+            "— compárala con los docstrings de `servidor_mcp.py`."
+        ),
+        3: (
+            "**Paso 3 · tools/call — la invocación.** El cliente pide ejecutar "
+            "`consultar_glosario(termino='mcp')` y el servidor devuelve el "
+            "resultado como content blocks. Esto es lo que ocurre cada vez que "
+            "el agente usa una tool MCP."
+        ),
+    }
+
+    _salida = mo.callout(
+        mo.md("*Pulsa el botón para ver el protocolo por dentro.*"),
+        kind="info",
+    )
+    if ui_boton_radiografia.value:
+        _peticiones = [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "radiografia-curso", "version": "1.0"},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "consultar_glosario",
+                    "arguments": {"termino": "mcp"},
+                },
+            },
+        ]
+        try:
+            _respuestas = ms.dialogo_crudo_stdio(
+                [sys.executable, str(RAIZ_PROYECTO / "servidor_mcp.py")],
+                _peticiones,
+                timeout=30.0,
+            )
+            _por_id = {r["id"]: r for r in _respuestas}
+            _secciones = {}
+            for _pet in _peticiones:
+                if "id" not in _pet:
+                    continue  # la notificación no tiene respuesta
+                _rid = _pet["id"]
+                _resp = _por_id.get(_rid, {"(sin respuesta)": True})
+                _titulo = f"Paso {_rid} · {_pet['method']}"
+                _secciones[_titulo] = mo.vstack(
+                    [
+                        mo.md(_ANOTACIONES[_rid]),
+                        mo.hstack(
+                            [
+                                mo.vstack(
+                                    [
+                                        mo.md("**→ Request (cliente):**"),
+                                        mo.ui.code_editor(
+                                            value=json.dumps(
+                                                _pet, indent=2, ensure_ascii=False
+                                            ),
+                                            language="json",
+                                            disabled=True,
+                                        ),
+                                    ]
+                                ),
+                                mo.vstack(
+                                    [
+                                        mo.md("**← Response (servidor):**"),
+                                        mo.ui.code_editor(
+                                            value=json.dumps(
+                                                _resp, indent=2, ensure_ascii=False
+                                            ),
+                                            language="json",
+                                            disabled=True,
+                                        ),
+                                    ]
+                                ),
+                            ],
+                            widths=[1, 1],
+                        ),
+                    ]
+                )
+            _salida = mo.accordion(_secciones)
+        except Exception as _e:
+            _salida = mo.callout(
+                mo.md(f"❌ Radiografía falló: `{_e!r}`"), kind="danger"
+            )
+    _salida
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
     mo.md(r"""
     ---
     ## 🎭 El Reparto de la Obra — Constructor de Subagentes
