@@ -29,6 +29,7 @@
 #     "pyrefly==1.1.1",
 #     "deepagents>=0.2",
 #     "pyyaml>=6",
+#     "langchain-mcp-adapters>=0.1",
 # ]
 # ///
 #
@@ -224,6 +225,10 @@ def _():
     from dotenv import load_dotenv
     from pydantic import BaseModel, Field
     from typing import List, Literal, Optional
+    import urllib.request
+    import urllib.parse
+    import xml.etree.ElementTree as ET
+    import asyncio
 
     # ── Núcleo LangChain / LangGraph ──────────────────────────────────────────────────
     from langchain.tools import tool
@@ -262,13 +267,25 @@ def _():
 
     sys.path.insert(0, str(Path(__file__).parent))
     import deep_soporte as ds
+    import mcp_soporte as ms
+
+    # ── Cliente MCP (opcional): si falta el paquete, el agente sigue sin MCP ────────
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        ADAPTERS_MCP = True
+    except ImportError:
+        ADAPTERS_MCP = False
+        MultiServerMCPClient = None
 
     # Cargar variables de entorno desde .env (NVIDIA_API_KEY, TAVILY_API_KEY…)
     load_dotenv()
     return (
+        ADAPTERS_MCP,
         BaseModel,
         ChatNVIDIA,
         ContextEditingMiddleware,
+        ET,
         Field,
         FilesystemBackend,
         HumanInTheLoopMiddleware,
@@ -280,6 +297,7 @@ def _():
         ModelCallLimitMiddleware,
         ModelFallbackMiddleware,
         ModelRetryMiddleware,
+        MultiServerMCPClient,
         NVIDIAEmbeddings,
         Optional,
         PAQUETE_NVIDIA,
@@ -287,25 +305,27 @@ def _():
         Path,
         PutOp,
         SqliteSaver,
-        SummarizationMiddleware,
         ToolCallLimitMiddleware,
         ToolRetryMiddleware,
+        asyncio,
         create_deep_agent,
         datetime,
         ds,
         dynamic_prompt,
         json,
+        ms,
         np,
         os,
         sqlite3,
         sys,
         tool,
+        urllib,
         uuid,
     )
 
 
 @app.cell
-def _(Path, ds, os):
+def _(Path, ds, ms, os):
     PRESENCIA_API_NVIDIA = bool(
         os.environ.get("NVIDIA_API_KEY", "").startswith("nvapi")
     )
@@ -346,6 +366,10 @@ def _(Path, ds, os):
     # Sembrar ejemplos didácticos la primera vez (idempotente)
     ds.sembrar_skill_ejemplo(DIR_SKILLS)
     ds.sembrar_subagente_ejemplo(DIR_SUBAGENTES)
+
+    # Config MCP declarativa (mismo formato que claude_desktop_config.json)
+    RUTA_CONFIG_MCP = RAIZ_PROYECTO / "mcp_config.json"
+    ms.sembrar_config_mcp(RUTA_CONFIG_MCP)
     return (
         DIR_ARTEFACTOS,
         DIR_SKILLS,
@@ -358,6 +382,7 @@ def _(Path, ds, os):
         RAIZ_PROYECTO,
         RUTA_BD_CORTO_PLAZO,
         RUTA_BD_LARGO_PLAZO,
+        RUTA_CONFIG_MCP,
     )
 
 
@@ -758,7 +783,9 @@ def _(
             **_params,
             chat_template_kwargs=_thinking,
         )
-    llm_estandar_obj = llm_respaldo  # alias claro para el resolvedor de subagentes
+    llm_estandar_obj = (
+        llm_respaldo  # alias claro para el resolvedor de subagentes
+    )
     return (
         llm_estandar_obj,
         llm_principal,
@@ -902,6 +929,7 @@ def _(
 def _(
     DIR_ARTEFACTOS,
     DIR_SKILLS,
+    ET,
     datetime,
     ds,
     evocar,
@@ -910,12 +938,9 @@ def _(
     os,
     recordar,
     tool,
+    urllib,
     uuid,
 ):
-    import urllib.request
-    import urllib.parse
-    import xml.etree.ElementTree as ET
-
     @tool
     def buscar_en_red(consulta: str) -> str:
         """Realiza una búsqueda rápida en internet usando Tavily.
@@ -1009,7 +1034,9 @@ def _(
         Tras instalar, avisa al usuario que pulse 'Recargar' en el Panel de Skills:
         eso reconstruye el agente automáticamente para que la skill quede disponible."""
         try:
-            return ds.instalar_skill_desde_fuente(fuente, nombre or None, DIR_SKILLS)
+            return ds.instalar_skill_desde_fuente(
+                fuente, nombre or None, DIR_SKILLS
+            )
         except Exception as e:
             return f"❌ Error instalando skill: {e}"
 
@@ -1030,11 +1057,15 @@ def _(
 
         try:
             df = pl.DataFrame(json.loads(datos_json))
-            marcas = {"barras": "mark_bar", "lineas": "mark_line", "puntos": "mark_point"}
+            marcas = {
+                "barras": "mark_bar",
+                "lineas": "mark_line",
+                "puntos": "mark_point",
+            }
             metodo_marca = marcas.get(tipo, "mark_bar")
-            grafico = getattr(alt.Chart(df, title=titulo), metodo_marca)().encode(
-                x=eje_x, y=eje_y
-            )
+            grafico = getattr(
+                alt.Chart(df, title=titulo), metodo_marca
+            )().encode(x=eje_x, y=eje_y)
             nombre_archivo = (
                 f"grafico_{datetime.datetime.now():%Y%m%d_%H%M%S}"
                 f"_{uuid.uuid4().hex[:6]}.png"
@@ -1058,7 +1089,7 @@ def _(
     ]
     # Registro nombre→tool: lo usan el constructor de subagentes y su cargador
     registro_tools = {t.name: t for t in herramientas_totales}
-    return herramientas_totales, registro_tools, instalar_skill, generar_grafico
+    return herramientas_totales, registro_tools
 
 
 @app.cell
@@ -1229,7 +1260,6 @@ def _(
     mo,
     registro_tools,
 ):
-    # Estado reactivo: incrementarlo desde el panel constructor fuerza recarga
     obtener_version_reparto, marcar_version_reparto = mo.state(0)
 
     def cargar_reparto():
@@ -1258,8 +1288,69 @@ def _(
 
 
 @app.cell
+async def _(
+    ADAPTERS_MCP,
+    MultiServerMCPClient,
+    RAIZ_PROYECTO,
+    RUTA_CONFIG_MCP,
+    asyncio,
+    ms,
+    obtener_version_mcp,
+    sys,
+):
+    # Dependencia reactiva: "Recargar" en el Panel MCP relanza esta celda
+    _ = obtener_version_mcp()
+
+    _servidores, avisos_mcp = ms.cargar_config_mcp(RUTA_CONFIG_MCP)
+    _conexiones = ms.normalizar_conexiones(_servidores, sys.executable, RAIZ_PROYECTO)
+
+    tools_mcp = []
+    estado_mcp = {}
+
+    for _nombre in _servidores:
+        if _nombre not in _conexiones:
+            estado_mcp[_nombre] = {
+                "estado": "⚪ deshabilitado",
+                "tools": [],
+                "detalle": "enabled: false en mcp_config.json",
+            }
+
+    if _conexiones and not ADAPTERS_MCP:
+        avisos_mcp.append(
+            "⚠️ langchain-mcp-adapters no está instalado — servidores MCP ignorados."
+        )
+    elif _conexiones:
+        # Un cliente POR SERVIDOR: si uno falla (comando roto, red caída),
+        # los demás siguen funcionando y el error queda visible en el panel.
+        # tool_name_prefix=True renombra cada tool a "<servidor>_<tool>"
+        # (ej. laboratorio_consultar_glosario) para evitar colisiones entre servidores.
+        for _nombre, _conexion in _conexiones.items():
+            try:
+                _cliente = MultiServerMCPClient(
+                    {_nombre: _conexion}, tool_name_prefix=True
+                )
+                _tools = await asyncio.wait_for(
+                    _cliente.get_tools(), timeout=15
+                )
+                tools_mcp.extend(_tools)
+                estado_mcp[_nombre] = {
+                    "estado": f"🟢 {len(_tools)} tools",
+                    "tools": [_t.name for _t in _tools],
+                    "detalle": "",
+                }
+            except Exception as _e:
+                estado_mcp[_nombre] = {
+                    "estado": "🔴 error",
+                    "tools": [],
+                    "detalle": f"{type(_e).__name__}: {_e}"[:300],
+                }
+    return avisos_mcp, estado_mcp, tools_mcp
+
+
+@app.cell
 def _(
     FilesystemBackend,
+    PERSONAJE_BASE,
     RAIZ_PROYECTO,
     almacen_memoria,
     cargar_reparto,
@@ -1271,11 +1362,15 @@ def _(
     middlewares_activos,
     obtener_version_reparto,
     obtener_version_skills,
-    PERSONAJE_BASE,
+    tools_mcp,
     uuid,
 ):
-    _ = obtener_version_reparto()  # dependencia reactiva: recarga al guardar personajes
-    _ = obtener_version_skills()  # dependencia reactiva: recarga al instalar/recargar skills
+    _ = (
+        obtener_version_reparto()
+    )  # dependencia reactiva: recarga al guardar personajes
+    _ = (
+        obtener_version_skills()
+    )  # dependencia reactiva: recarga al instalar/recargar skills
     subagentes_cargados, avisos_subagentes = cargar_reparto()
 
     agente_cerebro = None
@@ -1288,7 +1383,7 @@ def _(
         agente_cerebro = create_deep_agent(
             model=llm_principal,
             system_prompt=PERSONAJE_BASE,
-            tools=herramientas_totales,
+            tools=herramientas_totales + tools_mcp,
             middleware=middlewares_activos,
             subagents=subagentes_cargados,
             backend=FilesystemBackend(root_dir=str(RAIZ_PROYECTO)),
@@ -1376,7 +1471,9 @@ def _(ds, json, mo):
             # Categoría 'otro' → botón de descarga
             return mo.download(data=ruta.read_bytes(), filename=ruta.name)
         except Exception as e:
-            return mo.callout(mo.md(f"No pude renderizar `{ruta.name}`: {e}"), kind="warn")
+            return mo.callout(
+                mo.md(f"No pude renderizar `{ruta.name}`: {e}"), kind="warn"
+            )
 
     return (render_artefacto,)
 
@@ -1395,7 +1492,6 @@ def _(
     agente_cerebro,
     almacen_memoria,
     datetime,
-    ds,
     llm_principal,
     llm_respaldo,
     mo,
@@ -1538,13 +1634,13 @@ def _(
 
     # ── Función principal de ejecución del agente ─────────────────────────────────────
 
-    def ejecutar_agente(mensajes, config=None):
-        """Función generadora que mo.ui.chat llama en cada turno del usuario.
+    async def ejecutar_agente(mensajes, config=None):
+        """Función generadora async que mo.ui.chat llama en cada turno.
 
-        Usa yield para streaming progresivo: el primer yield muestra un mensaje
-        provisional mientras la reflexión autónoma corre en segundo plano.
-        Los artefactos nuevos (imágenes, PDFs, tablas...) creados durante el turno
-        se detectan por snapshot y se renderizan inline en el chat.
+        ⚠️ Async porque las tools MCP de langchain-mcp-adapters son
+        StructuredTool(coroutine=...) — solo invocables por la vía async.
+        Con .invoke() sync, la primera tool MCP lanzaría NotImplementedError.
+        marimo soporta generadores async en mo.ui.chat de forma nativa.
         """
         if agente_cerebro is None:
             yield (
@@ -1566,7 +1662,7 @@ def _(
             # Snapshot para detectar artefactos creados durante el turno
             _antes = {p for p in DIR_ARTEFACTOS.rglob("*") if p.is_file()}
 
-            salida = agente_cerebro.invoke(
+            salida = await agente_cerebro.ainvoke(
                 {"messages": [{"role": "user", "content": texto_usuario}]},
                 cfg,
             )
@@ -1603,9 +1699,12 @@ def _(
                 return mo.vstack(bloques)
 
             # 2 · Mostrar respuesta provisional mientras corre la reflexión
-            yield _vista(respuesta + "\n\n*(🧠 Actualizando memoria autónoma...)*")
+            yield _vista(
+                respuesta + "\n\n*(🧠 Actualizando memoria autónoma...)*"
+            )
 
             # 3 · Reflexión autónoma (Capa 3): analiza el turno y actualiza el store
+            # (sync: bloquea el event loop unos segundos; aceptable en notebook educativo)
             cambios = _ejecutar_reflexion_autonoma(texto_usuario, respuesta)
 
             # 4 · Respuesta final con cambios de memoria visibles (explicabilidad)
@@ -1636,7 +1735,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(ejecutar_agente, mo):
     interfaz_chat = mo.ui.chat(
         ejecutar_agente,
@@ -1650,9 +1749,9 @@ def _(ejecutar_agente, mo):
             "Lista tus skills disponibles y explica cuándo usarías cada una.",
             "Instala la skill 'artifacts-builder' del marketplace.",
             "Delega en el investigador: estado del arte de agentes con skills en 2026.",
-            "Genera un gráfico de barras con estos datos: [{\"x\": \"a\", \"y\": 3}, {\"x\": \"b\", \"y\": 7}]",
+            'Genera un gráfico de barras con estos datos: [{"x": "a", "y": 3}, {"x": "b", "y": 7}]',
         ],
-        show_configuration_controls=True,
+        show_configuration_controls=False,
     )
     interfaz_chat
     return
@@ -1690,13 +1789,17 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    # Estado reactivo: incrementarlo fuerza la reconstrucción del agente
-    # (mismo patrón que obtener_version_reparto/marcar_version_reparto).
     obtener_version_skills, marcar_version_skills = mo.state(0)
     return marcar_version_skills, obtener_version_skills
 
 
 @app.cell
+def _(mo):
+    obtener_version_mcp, marcar_version_mcp = mo.state(0)
+    return marcar_version_mcp, obtener_version_mcp
+
+
+@app.cell(hide_code=True)
 def _(
     DIR_SKILLS,
     ds,
@@ -1733,7 +1836,9 @@ def _(
         _bloques.append(
             mo.callout(
                 mo.md(_msg_instalacion),
-                kind="success" if _msg_instalacion.startswith("✅") else "danger",
+                kind="success"
+                if _msg_instalacion.startswith("✅")
+                else "danger",
             )
         )
     for _aviso in _avisos_skills:
@@ -1741,13 +1846,18 @@ def _(
     if _skills:
         _bloques.append(
             mo.ui.table(
-                [{"Skill": s["name"], "Descripción": s["description"]} for s in _skills],
+                [
+                    {"Skill": s["name"], "Descripción": s["description"]}
+                    for s in _skills
+                ],
                 selection=None,
             )
         )
     else:
         _bloques.append(
-            mo.callout(mo.md("*(Sin skills — instala una arriba)*"), kind="info")
+            mo.callout(
+                mo.md("*(Sin skills — instala una arriba)*"), kind="info"
+            )
         )
 
     mo.vstack(_bloques)
@@ -1770,7 +1880,9 @@ def _(mo):
 
 @app.cell
 def _(herramientas_totales, mo):
-    ui_sub_nombre = mo.ui.text(label="**Nombre** (sin espacios)", placeholder="critico")
+    ui_sub_nombre = mo.ui.text(
+        label="**Nombre** (sin espacios)", placeholder="critico"
+    )
     ui_sub_descripcion = mo.ui.text(
         label="**Descripción** — el director la lee para decidir delegar",
         placeholder="Delega aquí revisiones de calidad de textos.",
@@ -1787,12 +1899,18 @@ def _(herramientas_totales, mo):
         label="**Tools del personaje**",
     )
     ui_sub_modelo = mo.ui.dropdown(
-        options={"Heredar del director": "", "Estándar": "estandar", "Razonamiento": "razonamiento"},
+        options={
+            "Heredar del director": "",
+            "Estándar": "estandar",
+            "Razonamiento": "razonamiento",
+        },
         value="Heredar del director",
         label="**Modelo**",
     )
     ui_boton_guardar_sub = mo.ui.run_button(label="💾 Guardar personaje")
-    ui_sub_eliminar = mo.ui.text(label="**Eliminar personaje** (nombre)", placeholder="critico")
+    ui_sub_eliminar = mo.ui.text(
+        label="**Eliminar personaje** (nombre)", placeholder="critico"
+    )
     ui_boton_eliminar_sub = mo.ui.run_button(label="🗑️ Eliminar")
     return (
         ui_boton_eliminar_sub,
@@ -1806,7 +1924,7 @@ def _(herramientas_totales, mo):
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     DIR_SUBAGENTES,
     avisos_subagentes,
@@ -1831,7 +1949,8 @@ def _(
                 ds.guardar_subagente_md(
                     DIR_SUBAGENTES,
                     name=ui_sub_nombre.value.strip(),
-                    description=ui_sub_descripcion.value.strip() or ui_sub_nombre.value,
+                    description=ui_sub_descripcion.value.strip()
+                    or ui_sub_nombre.value,
                     persona=ui_sub_persona.value,
                     tools=list(ui_sub_tools.value),
                     model=ui_sub_modelo.value or None,
@@ -1845,9 +1964,13 @@ def _(
 
     if ui_boton_eliminar_sub.value and ui_sub_eliminar.value.strip():
         try:
-            if ds.eliminar_subagente_md(DIR_SUBAGENTES, ui_sub_eliminar.value.strip()):
+            if ds.eliminar_subagente_md(
+                DIR_SUBAGENTES, ui_sub_eliminar.value.strip()
+            ):
                 marcar_version_reparto(obtener_version_reparto() + 1)
-                _msg_reparto = f"🗑️ Personaje '{ui_sub_eliminar.value}' eliminado."
+                _msg_reparto = (
+                    f"🗑️ Personaje '{ui_sub_eliminar.value}' eliminado."
+                )
             else:
                 _msg_reparto = f"❌ No existe '{ui_sub_eliminar.value}'."
         except ValueError as _e:
@@ -1911,7 +2034,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     ui_boton_refrescar_galeria = mo.ui.run_button(label="🔄 Refrescar galería")
     ui_limite_galeria = mo.ui.slider(
@@ -1920,7 +2043,7 @@ def _(mo):
     return ui_boton_refrescar_galeria, ui_limite_galeria
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     DIR_ARTEFACTOS,
     datetime,
@@ -1953,7 +2076,9 @@ def _(
             [
                 _cabecera,
                 mo.callout(
-                    mo.md("*(Sin artefactos — pide al agente un gráfico para probar)*"),
+                    mo.md(
+                        "*(Sin artefactos — pide al agente un gráfico para probar)*"
+                    ),
                     kind="info",
                 ),
             ]
@@ -2204,21 +2329,22 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("### 🛠️ Editor de Herramientas del Estudiante")
+    mo.md("""
+    ### 🛠️ Editor de Herramientas del Estudiante
+    """)
     return
 
 
 @app.cell
 def _(mo):
-    # Editor de código para que el estudiante defina su herramienta
     editor_herramienta = mo.ui.code_editor(
         value='''from langchain.tools import tool
 
-@tool
-def mi_nueva_herramienta(pregunta: str) -> str:
+    @tool
+    def mi_nueva_herramienta(pregunta: str) -> str:
     """Describe aquí qué hace tu herramienta."""
     return f"Procesé: {pregunta}"
-''',
+    ''',
         label="Escribe tu herramienta aquí:",
         language="python",
     )
@@ -2255,12 +2381,12 @@ def _(herramienta_dinamica, herramientas_totales):
         herramientas_agente = herramientas_totales + [herramienta_dinamica]
     else:
         herramientas_agente = herramientas_totales
-    # NOTA: herramientas_agente queda disponible para uso futuro (p.ej. si se
-    # rewire la celda de create_deep_agent para depender de ella); hoy
-    # agente_cerebro se construye antes en el notebook usando
-    # herramientas_totales, por lo que una tool creada aquí en caliente no
-    # se inyecta automáticamente sin recrear el agente.
-    return (herramientas_agente,)
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 if __name__ == "__main__":
