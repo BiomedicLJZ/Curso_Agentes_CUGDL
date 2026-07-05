@@ -166,6 +166,17 @@
 #  Convención: toda tool que produzca algo no-textual lo guarda en ./artefactos/
 #  y devuelve la ruta. La Galería renderiza por tipo (imagen, pdf, video, audio,
 #  tabla…) y el chat muestra inline los artefactos creados en el turno.
+#
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# CONCEPTO 9 · MCP (MODEL CONTEXT PROTOCOL)
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+#  El "puerto USB-C" de los agentes: un protocolo estándar (JSON-RPC) para que
+#  servidores externos anuncien tools/resources/prompts a cualquier cliente.
+#    · mcp_config.json  → qué servidores conectar (formato claude_desktop_config).
+#    · servidor_mcp.py  → NUESTRO servidor demo (FastMCP) — léelo y modifícalo.
+#    · Panel MCP        → estado, formulario y recarga en vivo.
+#    · Radiografía      → los mensajes JSON-RPC crudos del protocolo, en pantalla.
 
 import marimo
 
@@ -201,6 +212,7 @@ def _(mo):
     | **Skills** | Carpetas SKILL.md con progressive disclosure (estándar agentskills.io) |
     | **Subagentes** | Personajes con contexto propio delegados vía la tool `task` |
     | **Multimodal** | Artefactos no-textuales guardados en ./artefactos/ y renderizados en galería |
+    | **MCP** | Model Context Protocol: servidores de tools externos enchufables (cliente + servidor propio) |
     | **Marimo UI** | Dashboard reactivo, panel de control, chat, inspector de memoria |
 
     > **Requisito:** Define `NVIDIA_API_KEY=nvapi-...` en tu archivo `.env` o como
@@ -2068,6 +2080,8 @@ def _(ejecutar_agente, mo):
             "Instala la skill 'artifacts-builder' del marketplace.",
             "Delega en el investigador: estado del arte de agentes con skills en 2026.",
             'Genera un gráfico de barras con estos datos: [{"x": "a", "y": 3}, {"x": "b", "y": 7}]',
+            "Consulta en el glosario del laboratorio qué es 'mcp'.",
+            "Pide las estadísticas del curso al servidor laboratorio.",
         ],
         show_configuration_controls=False,
     )
@@ -2090,6 +2104,69 @@ def _(mo):
     *Nota: al instalar una skill o pulsar "Recargar", el agente se reconstruye
     automáticamente para que DeepAgents relea `skills/`.*
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Skills — los manuales en la estantería": mo.md(
+                r"""
+    Nadie memoriza el manual de la lavadora. Sabes que existe, sabes en qué estante está
+    y lo abres solo el día que parpadea un error raro. Una **skill** funciona igual para
+    el agente: es conocimiento que vive en una estantería y que el modelo consulta
+    únicamente cuando la tarea lo pide, sin cargar con él el resto del tiempo.
+
+    En concreto, una skill es una **carpeta** con un archivo `SKILL.md` dentro. Ese
+    archivo abre con un *frontmatter* YAML de dos campos obligatorios —`name` y
+    `description`— y sigue con instrucciones en markdown: procedimientos, criterios,
+    plantillas, ejemplos. Puede acompañarse de recursos opcionales (scripts, datos,
+    imágenes) en la misma carpeta. Y no es un formato casero: es el estándar
+    **agentskills.io**, el mismo que usan Claude Code y otros arneses, así que una skill
+    del marketplace se instala aquí sin traducir nada.
+
+    La pieza que hace que todo escale se llama **progressive disclosure** (revelación
+    progresiva). Cuando el agente arranca, no lee las skills enteras: lee **solo los
+    frontmatter**, es decir, el `name` y la `description` de cada una. Eso cuesta
+    poquísimos tokens. Con ese índice en la cabeza, el modelo decide sobre la marcha: si
+    la tarea encaja con alguna `description`, entonces —y solo entonces— hace `read_file`
+    del `SKILL.md` completo y sigue sus instrucciones. Si no encaja, no gasta ni un token
+    en ella. Gracias a eso puedes tener decenas de skills instaladas sin quemar la
+    ventana de contexto.
+
+    Conviene no confundir **skill** con **tool**, porque se parecen pero no son lo mismo.
+    Una tool es **código ejecutable**: una función de Python que el runtime corre. Una
+    skill es **conocimiento**: no ejecuta nada, guía al LLM sobre *cómo* pensar o *qué*
+    pasos seguir. La tool le da manos; la skill le da un manual de instrucciones.
+
+    Instalar es sencillo desde el Panel de Skills. Puedes dar tres cosas: un **nombre
+    corto** (p. ej. `pdf`) que el instalador resuelve contra el marketplace, una **URL de
+    carpeta** de GitHub (`.../tree/...`), o una **URL raw** directa a un `SKILL.md`. Un
+    detalle de seguridad que no se ve pero importa: el instalador **valida los nombres
+    derivados** de esas fuentes contra ataques de *path-traversal*, para que una URL
+    maliciosa no pueda escribir fuera de `./skills/`. Y como el agente solo lee la
+    estantería al construirse, cada vez que instalas una skill o pulsas **Recargar** el
+    notebook **reconstruye el agente** para que DeepAgents relea la carpeta `skills/`.
+
+    **Dónde verlo en este notebook:** abre el **🧩 Panel de Skills** para instalar desde
+    el marketplace y ver la tabla de skills disponibles; la tool **`instalar_skill`** es
+    la que descarga y valida cada fuente; y la carpeta **`./skills/`** en el proyecto es
+    la estantería física donde aterrizan los `SKILL.md`.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart TD
+    A["🚀 Arranque del agente"] --> B["Lee SOLO los frontmatter:<br/>name + description de cada SKILL.md"]
+    B --> C{"¿La tarea encaja con<br/>alguna description?"}
+    C -->|"sí"| D["📖 read_file del<br/>SKILL.md completo"]
+    D --> E["Sigue las instrucciones<br/>+ usa los recursos de la carpeta"]
+    C -->|"no"| F["Responde sin skills<br/>(cero tokens gastados en ellas)"]
+"""
+            ),
+        }
+    )
     return
 
 
@@ -2197,6 +2274,98 @@ def _(mo):
     > ⏳ *La primera conexión a un servidor `npx`/`uvx` puede tardar (descarga el
     > paquete). El descubrimiento tiene un timeout de 15 s por servidor.*
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: MCP — el puerto USB-C de los agentes": mo.md(
+                r"""
+    Antes del USB-C, cada aparato traía su propio cargador con su propio conector, y
+    cambiar de móvil significaba cambiar de cable. Las tools nativas de un agente son eso:
+    **periféricos soldados a la placa**, integraciones hechas a mano una por una. **MCP**
+    (Model Context Protocol) es el **puerto estándar**: un conector único donde cualquier
+    fabricante enchufa su servicio sin tener que tocar la placa del agente.
+
+    El dolor que resuelve tiene nombre: el **problema N×M**. Si tienes N agentes que
+    quieren hablar con M servicios, y cada pareja necesita su propia integración a medida,
+    acabas con **N×M** piezas de pegamento que mantener. MCP lo reduce a **N+M**: cada
+    agente implementa **un** cliente del protocolo, cada servicio implementa **un**
+    servidor, y todos se entienden por el mismo estándar. La combinatoria se colapsa en
+    una suma.
+
+    La **arquitectura** tiene tres papeles. El **host** es este notebook. Dentro del host
+    viven los **clientes** —uno por cada servidor al que te conectas—. Y al otro lado
+    están los **servidores**, que pueden ser procesos **locales** (transporte `stdio`,
+    hablando por stdin/stdout) o **remotos** (transporte `http`/`sse`). ¿Qué anuncia un
+    servidor? Tres cosas: **tools** (acciones), **resources** (datos) y **prompts**
+    (plantillas).
+
+    El **ciclo de vida del protocolo** es un diálogo JSON-RPC en tres actos: `initialize`
+    (cliente y servidor negocian versión y capacidades), `tools/list` (el servidor entrega
+    su catálogo de tools con nombre, descripción y schema) y `tools/call` (el cliente
+    invoca una tool concreta y recibe el resultado). No hace falta que lo imagines:
+    **pulsa la Radiografía** del Panel MCP y verás esos mensajes en **bytes reales**, tal
+    cual cruzan el cable.
+
+    Nuestro **lado cliente** encaja en lo que ya sabes. El archivo `mcp_config.json`
+    —mismo formato que `claude_desktop_config.json`— declara qué servidores conectar.
+    `MultiServerMCPClient` los levanta, y las tools MCP entran al agente **como cualquier
+    `@tool`**: para el modelo son indistinguibles de las nativas. El parámetro
+    `tool_name_prefix` les pone un prefijo (verás las del laboratorio como `laboratorio_*`)
+    para **evitar colisiones** cuando dos servidores nombran igual una tool.
+
+    Nuestro **lado servidor** es para trastear: `servidor_mcp.py` está escrito con
+    **FastMCP**. Ábrelo, léelo, **añade una tool** y pulsa Recargar para verla aparecer. Es
+    la mejor forma de entender el protocolo: siendo el fabricante que enchufa algo nuevo.
+
+    Y para cerrar con honestidad, los **trade-offs**. Cada `tools/call` abre una **sesión
+    nueva** con el servidor, lo que añade algo de **latencia**. Los **subagentes** del
+    reparto usan solo tools nativas, no las de MCP. Y la **primera conexión** a un servidor
+    `npx`/`uvx` puede tardar, porque descarga el paquete antes de arrancar.
+
+    **Dónde verlo en este notebook:** abre el **🔌 Panel MCP** para ver el estado y el
+    formulario de servidores; pulsa la **Radiografía** para leer los mensajes JSON-RPC
+    crudos; inspecciona **`mcp_config.json`** y **`servidor_mcp.py`** para los dos lados
+    del protocolo; y en el **chat** llama a las tools **`laboratorio_*`** para invocar el
+    servidor demo de punta a punta.
+    """
+            ),
+            "🗺️ Arquitectura": mo.mermaid(
+                """
+flowchart LR
+    subgraph HOST["🏠 Host — este notebook"]
+        AG["🤖 Agente DeepAgents"]
+        CL1["🔌 Cliente MCP 1"]
+        CL2["🔌 Cliente MCP 2"]
+        AG --- CL1
+        AG --- CL2
+    end
+    CL1 <-->|"stdio · JSON-RPC<br/>por stdin/stdout"| S1["🧪 servidor_mcp.py<br/>(laboratorio local)"]
+    CL2 <-->|"http / sse"| S2["🌐 servidor remoto<br/>(de cualquier fabricante)"]
+    S1 --> T1["tools · resources · prompts"]
+    S2 --> T2["tools · resources · prompts"]
+"""
+            ),
+            "🔁 Secuencia del protocolo": mo.mermaid(
+                """
+sequenceDiagram
+    participant C as 🔌 Cliente (notebook)
+    participant S as 🧪 Servidor (laboratorio)
+    C->>S: initialize (versión + capabilities)
+    S-->>C: sus capabilities (tengo tools y resources)
+    C->>S: notifications/initialized
+    C->>S: tools/list
+    S-->>C: catálogo: nombre + descripción + schema
+    Note over C: el agente ya "ve" las tools externas
+    C->>S: tools/call consultar_glosario {termino: "mcp"}
+    S-->>C: resultado (content blocks)
+"""
+            ),
+        }
+    )
     return
 
 
@@ -2499,6 +2668,67 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Subagentes — el reparto de la obra": mo.md(
+                r"""
+    Un director de teatro no actúa todas las escenas. Tiene un **reparto**: lee la ficha
+    de cada actor, decide quién encaja en cada papel y le cede el escenario. El agente
+    principal de este notebook trabaja igual. Es el **director**, y no resuelve todo de su
+    puño: cuando una tarea encaja con un personaje, delega la escena vía la tool `task`.
+
+    Cada personaje del reparto vive en un archivo `./subagentes/<nombre>.md`. Ese archivo
+    tiene la misma estructura que ya conoces: un *frontmatter* con su nombre y su
+    `description`, y debajo su **persona** —el system prompt que define cómo piensa y
+    actúa—. Es el formato de *agents* de Claude Code, así que un personaje escrito aquí es
+    portable. El director lee las `description` de todo el reparto y, exactamente como
+    hacía con las skills, usa esa breve ficha para decidir a quién llamar.
+
+    Pero, ¿por qué molestarse en delegar en vez de hacerlo todo el director? La razón
+    técnica es el **aislamiento de contexto**. Cuando el director llama a
+    `task('investigador', encargo)`, el investigador arranca en un **contexto limpio
+    propio**: hace su trabajo —que puede ser leer cincuenta páginas web, comparar fuentes,
+    tomar notas— y devuelve al director **solo el resultado final**. Todo ese ruido
+    intermedio de la investigación **no contamina** la conversación del director. Sin
+    subagentes, esas cincuenta páginas se apilarían en la ventana del agente principal y
+    ahogarían el hilo. Con subagentes, el director recibe un resumen limpio y sigue fresco.
+
+    Hay más flexibilidad de la que parece. Cada personaje puede tener **su propio
+    subconjunto de tools** —no todas, solo las que su papel necesita— y hasta **su propio
+    modelo**: los alias estándar (`estandar`, `razonamiento`) se resuelven a objetos LLM
+    reales, así que puedes montar un personaje barato y rápido para tareas mecánicas y otro
+    más potente para razonar a fondo.
+
+    La regla práctica de cuándo delegar es intuitiva una vez la ves. Si la tarea es
+    **larga y autocontenida** —una investigación, una revisión exhaustiva, un trabajo que
+    genera mucho texto intermedio que no necesitas ver— dásela a un **personaje**. Si es
+    una **respuesta directa** que el director puede dar de un vistazo, no montes un reparto
+    para eso: contéstala tú. Delegar tiene un coste (arrancar un contexto nuevo), así que
+    se reserva para cuando el aislamiento compensa.
+
+    **Dónde verlo en este notebook:** abre el constructor **🎭 El Reparto de la Obra** para
+    crear y editar personajes; encontrarás **`investigador.md`** ya sembrado como ejemplo
+    listo para usar; y en el **chat** prueba el prompt *"Delega en el investigador..."*
+    para ver al director ceder el escenario y recibir de vuelta solo el resultado.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart TD
+    DIR["🎬 Director<br/>(agente principal)"] -->|"task('investigador', encargo)"| S1["🕵️ investigador<br/>contexto limpio propio"]
+    DIR -->|"task(...)"| S2["✍️ tu próximo personaje"]
+    S1 -->|"SOLO el resultado final"| DIR
+    S2 -->|"SOLO el resultado final"| DIR
+    DIR --> R["💬 Respuesta integrada<br/>al usuario"]
+"""
+            ),
+        }
+    )
+    return
+
+
 @app.cell
 def _(herramientas_totales, mo):
     ui_sub_nombre = mo.ui.text(
@@ -2652,6 +2882,68 @@ def _(mo):
     aterriza en `./artefactos/` y se renderiza aquí según su tipo:
     imagen, PDF, video, audio, tabla, JSON, markdown, HTML o descarga directa.
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "📖 Teoría: Multimodal — la mesa de resultados del taller": mo.md(
+                r"""
+    En un buen taller, el artesano no te **describe** la silla que hizo: la pone sobre la
+    mesa de resultados para que la veas y la toques. El problema es que el LLM, por su
+    naturaleza, solo sabe **describir** —solo emite texto—. Entonces, ¿cómo logramos que
+    un agente te entregue una imagen, un PDF o un gráfico de verdad, y no un párrafo
+    hablando de ellos?
+
+    La respuesta es una **convención** sencilla y potente: toda tool que produzca algo
+    no-textual **lo escribe en `./artefactos/`** y devuelve, como texto, la **ruta** del
+    archivo. El LLM sigue haciendo lo único que sabe —emitir texto (la ruta)—, pero ese
+    texto es un puntero a un objeto real que vive en disco. La multimodalidad de
+    **salida** no está en el modelo; está en el acuerdo de dónde dejar las cosas.
+
+    Quien convierte esa ruta en algo visible es `clasificar_artefacto`, que decide **por
+    la extensión** qué tipo de artefacto es: imagen, pdf, video, audio, tabla, json, texto,
+    html u otro. Cada tipo tiene su render de marimo correspondiente —`mo.image`,
+    `mo.pdf`, `mo.video`, y así—, de modo que un `.png` se muestra como imagen y un `.pdf`
+    como documento paginado, sin que nadie tenga que decirlo explícitamente.
+
+    Esos artefactos aparecen en **dos vitrinas distintas**. La primera es la **Galería**:
+    el histórico completo de todo lo que se ha creado, refrescable a demanda. La segunda es
+    el **chat**, que usa un truco de *snapshot-diff*: toma una foto de la carpeta antes del
+    turno y otra después, y muestra **inline** solo lo que nació **durante** ese turno. Así
+    ves el resultado justo al lado de la respuesta que lo generó, sin bucear en la galería.
+
+    El ejemplo de punta a punta es `generar_grafico`. Sigue toda la cadena: recibe un
+    **JSON** de datos, lo carga en **Polars**, lo dibuja con **Altair**, exporta un **PNG**
+    a `./artefactos/`… y ese PNG aparece a la vez en la galería y, si lo pediste en el chat,
+    inline en la conversación. Un solo camino, del dato crudo a la imagen sobre la mesa.
+
+    Y no hace falta una tool a medida para cada cosa: el agente también puede crear
+    artefactos **directamente** con `write_file`, la herramienta de filesystem que trae
+    DeepAgents. Escribe en la **misma carpeta** `./artefactos/` y obtiene el **mismo
+    render**, porque la convención es la misma para todos. La mesa de resultados es una
+    sola, la use quien la use.
+
+    **Dónde verlo en este notebook:** abre la **🖼️ Galería de Artefactos Multimodales**
+    para ver el histórico renderizado por tipo; revisa la tool **`generar_grafico`** para
+    leer la cadena JSON → Polars → Altair → PNG; y en el **chat** pide un gráfico de barras
+    para ver el artefacto aparecer inline gracias al snapshot-diff.
+    """
+            ),
+            "🗺️ Diagrama": mo.mermaid(
+                """
+flowchart LR
+    T["🔧 Tool<br/>(generar_grafico...)"] -->|"escribe archivo"| A[("📁 ./artefactos/")]
+    W["📝 write_file<br/>del agente"] -->|"escribe archivo"| A
+    A --> C{"clasificar_artefacto<br/>(por extensión)"}
+    C -->|"imagen · pdf · video<br/>audio · tabla · json..."| G["🖼️ Galería<br/>(histórico)"]
+    C -->|"creados en el turno<br/>(snapshot diff)"| CH["💬 Chat inline"]
+"""
+            ),
+        }
+    )
     return
 
 
@@ -2964,11 +3256,12 @@ def _(mo):
     editor_herramienta = mo.ui.code_editor(
         value='''from langchain.tools import tool
 
-    @tool
-    def mi_nueva_herramienta(pregunta: str) -> str:
+
+@tool
+def mi_nueva_herramienta(pregunta: str) -> str:
     """Describe aquí qué hace tu herramienta."""
     return f"Procesé: {pregunta}"
-    ''',
+''',
         label="Escribe tu herramienta aquí:",
         language="python",
     )
