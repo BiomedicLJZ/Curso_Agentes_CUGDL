@@ -238,6 +238,7 @@ def _():
         ToolRetryMiddleware,
         create_agent,
         datetime,
+        dynamic_prompt,
         json,
         np,
         os,
@@ -716,7 +717,7 @@ def _(ESPACIO_MEMORIA, almacen_memoria, semantica_activa):
 
         return textos
 
-    return (mezclar_recuerdos,)
+    return mezclar_recuerdos, ultimo_texto_usuario
 
 
 @app.cell
@@ -809,7 +810,7 @@ def _(
 
 
 @app.cell
-def _(evocar, olvidar, os, recordar, tool):
+def _(ET, evocar, olvidar, os, recordar, tool, urllib):
     def buscar_en_red(consulta: str) -> str:
         """Realiza una búsqueda rápida en internet usando Tavily.
         Devuelve hasta 5 resultados relevantes con título, URL y fragmento.
@@ -847,6 +848,53 @@ def _(evocar, olvidar, os, recordar, tool):
         except Exception as e:
             return f"Error al extraer página: {e}"
 
+
+    @tool
+    def search_arxiv(query: str, max_results: int = 3) -> str:
+        """
+        Searches the arXiv database for scientific and academic papers.
+        Use this tool to find research papers, authors, or abstracts.
+
+        Args:
+            query: The search term (e.g., 'machine learning', 'quantum physics').
+            max_results: The maximum number of papers to return.
+        """
+        # Format the URL with the query
+        safe_query = urllib.parse.quote(query)
+        url = f"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results={max_results}"
+
+        try:
+            with urllib.request.urlopen(url) as response:
+                root = ET.fromstring(response.read())
+                ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+                papers = []
+                for entry in root.findall("atom:entry", ns):
+                    title = (
+                        entry.find("atom:title", ns)
+                        .text.replace("\n", " ")
+                        .strip()
+                    )
+                    summary = (
+                        entry.find("atom:summary", ns)
+                        .text.replace("\n", " ")
+                        .strip()
+                    )
+
+                    # We return a simple formatted string for the LLM to read
+                    papers.append(
+                        f"Title: {title}\nSummary: {summary[:200]}...\n---"
+                    )
+
+                return (
+                    "\n".join(papers)
+                    if papers
+                    else "No papers found for this query."
+                )
+
+        except Exception as e:
+            return f"Tool Error: {str(e)}"
+
     herramientas_totales = [
         recordar,
         evocar,
@@ -854,78 +902,43 @@ def _(evocar, olvidar, os, recordar, tool):
         buscar_en_red,
         investigar_a_fondo,
         extraer_pagina_web,
+        search_arxiv
     ]
     return (herramientas_totales,)
 
 
-app._unparsable_cell(
-    """
+@app.cell
+def _(ID_USUARIO, dynamic_prompt, mezclar_recuerdos, ultimo_texto_usuario):
     PERSONAJE_BASE = (
-        \"Eres el Cerebro en el Frasco: un asistente lúcido, analítico y con memoria \"
-        \"persistente. Hablas en el idioma del usuario (español o inglés según el contexto), \"
-        \"con un tono directo pero cálido. No repites frases de cortesía vacías. \"
-        \"Cuando aprendas algo nuevo y duradero sobre el usuario, llama a `recordar`.\"
+        "Eres el Cerebro en el Frasco: un asistente lúcido, analítico y con memoria "
+        "persistente. Hablas en el idioma del usuario (español o inglés según el contexto), "
+        "con un tono directo pero cálido. No repites frases de cortesía vacías. "
+        "Cuando aprendas algo nuevo y duradero sobre el usuario, llama a `recordar`."
     )
 
     @dynamic_prompt
     def inyectar_memoria_dinamica(peticion) -> str:
-        \"\"\"Construye el system prompt inyectando los recuerdos más relevantes.\"\"\"
-        consulta = ultimo_texto_usuario(import urllib.request
-    import urllib.parse
-    import xml.etree.ElementTree as ET
-    from langchain_core.tools import tool
-
-    @tool
-    def search_arxiv(query: str, max_results: int = 3) -> str:
-        \"\"\"
-        Searches the arXiv database for scientific and academic papers.
-        Use this tool to find research papers, authors, or abstracts.
-    
-        Args:
-            query: The search term (e.g., 'machine learning', 'quantum physics').
-            max_results: The maximum number of papers to return.
-        \"\"\"
-        # Format the URL with the query
-        safe_query = urllib.parse.quote(query)
-        url = f\"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results={max_results}\"
-    
-        try:
-            with urllib.request.urlopen(url) as response:
-                root = ET.fromstring(response.read())
-                ns = {'atom': 'http://www.w3.org/2005/Atom'}
-            
-                papers = []
-                for entry in root.findall('atom:entry', ns):
-                    title = entry.find('atom:title', ns).text.replace('\\n', ' ').strip()
-                    summary = entry.find('atom:summary', ns).text.replace('\\n', ' ').strip()
-                
-                    # We return a simple formatted string for the LLM to read
-                    papers.append(f\"Title: {title}\\nSummary: {summary[:200]}...\\n---\")
-                
-                return \"\\n\".join(papers) if papers else \"No papers found for this query.\"
-            
-        except Exception as e:
-            return f\"Tool Error: {str(e)}\") or ID_USUARIO
+        """Construye el system prompt inyectando los recuerdos más relevantes."""
+        consulta = ultimo_texto_usuario(peticion.messages) or ID_USUARIO
         recuerdos = mezclar_recuerdos(consulta)
 
         if recuerdos:
-            bloque = \"\\n\".join(f\"  - {t}\" for t in recuerdos)
+            bloque = "\n".join(f"  - {t}" for t in recuerdos)
             return (
-                f\"{PERSONAJE_BASE}\\n\\n\"
-                f\"## Lo que recuerdas de {ID_USUARIO} (memoria persistente):\\n\"
-                f\"{bloque}\\n\\n\"
-                \"Usa estos recuerdos con naturalidad, sin anunciarlos explícitamente. \"
-                \"Si detectas información desactualizada, usa `olvidar` + `recordar`.\"
+                f"{PERSONAJE_BASE}\n\n"
+                f"## Lo que recuerdas de {ID_USUARIO} (memoria persistente):\n"
+                f"{bloque}\n\n"
+                "Usa estos recuerdos con naturalidad, sin anunciarlos explícitamente. "
+                "Si detectas información desactualizada, usa `olvidar` + `recordar`."
             )
 
         return (
-            f\"{PERSONAJE_BASE}\\n\\n\"
-            f\"Aún no tienes recuerdos de {ID_USUARIO}. \"
-            \"Cuando aprendas algo duradero en esta conversación, llama a `recordar`.\"
+            f"{PERSONAJE_BASE}\n\n"
+            f"Aún no tienes recuerdos de {ID_USUARIO}. "
+            "Cuando aprendas algo duradero en esta conversación, llama a `recordar`."
         )
-    """,
-    name="_"
-)
+
+    return PERSONAJE_BASE, inyectar_memoria_dinamica
 
 
 @app.cell
@@ -1655,7 +1668,7 @@ def _(tool):
         except Exception as e:
             return f"Tool Error: {str(e)}"
 
-    return (urllib,)
+    return ET, urllib
 
 
 @app.cell

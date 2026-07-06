@@ -180,8 +180,12 @@
 
 import marimo
 
-__generated_with = "0.23.11"
-app = marimo.App(width="full", auto_download=["html", "ipynb"])
+__generated_with = "0.23.13"
+app = marimo.App(
+    width="full",
+    app_title="DeepAgents",
+    auto_download=["html", "ipynb"],
+)
 
 
 @app.cell
@@ -270,14 +274,14 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart TD
+    flowchart TD
     U["👤 Usuario"] --> R{"🧠 Razonar<br/>(el LLM decide)"}
     R -->|"necesita datos"| A["🔧 Actuar<br/>(llamar una tool)"]
     A --> O["👁️ Observar<br/>(resultado de la tool)"]
     O --> R
     R -->|"contexto suficiente"| F["💬 Responder"]
     F --> U
-"""
+    """
             ),
         }
     )
@@ -332,7 +336,7 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart LR
+    flowchart LR
     subgraph CP["📓 Corto plazo — el hilo"]
         CK[("SqliteSaver<br/>checkpointer")]
     end
@@ -343,7 +347,7 @@ flowchart LR
     AG -->|"recordar / evocar / olvidar"| ST
     RF["🪞 Reflexión autónoma<br/>(tras cada turno)"] -->|"extrae hechos"| ST
     ST -->|"@dynamic_prompt inyecta<br/>recuerdos relevantes"| AG
-"""
+    """
             ),
         }
     )
@@ -399,7 +403,7 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-sequenceDiagram
+    sequenceDiagram
     participant U as 👤 Usuario
     participant L as 🧠 LLM
     participant E as ⚙️ Ejecutor
@@ -410,7 +414,7 @@ sequenceDiagram
     T-->>E: resultados de Tavily
     E-->>L: ToolMessage con el resultado
     L-->>U: respuesta fundamentada en datos
-"""
+    """
             ),
         }
     )
@@ -462,7 +466,7 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart LR
+    flowchart LR
     IN["📨 Petición"] --> M1["🧠 memoria<br/>dinámica"]
     M1 --> M2["📄 resumen<br/>(deepagents)"]
     M2 --> M3["✂️ edición de<br/>contexto"]
@@ -471,7 +475,7 @@ flowchart LR
     M5 --> M6["♻️ reintentos<br/>+ fallback"]
     M6 --> NU["🤖 LLM + tools"]
     NU --> OUT["📬 Respuesta"]
-"""
+    """
             ),
         }
     )
@@ -525,7 +529,7 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart TD
+    flowchart TD
     CDA["create_deep_agent()"] --> P["🗺️ write_todos<br/>planificación integrada"]
     CDA --> FS["📁 filesystem<br/>ls · read · write · edit"]
     CDA --> TK["🎭 task<br/>delegar en subagentes"]
@@ -536,7 +540,7 @@ flowchart TD
     TK --> LG
     SK --> LG
     SUM --> LG
-"""
+    """
             ),
         }
     )
@@ -2166,13 +2170,13 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart TD
+    flowchart TD
     A["🚀 Arranque del agente"] --> B["Lee SOLO los frontmatter:<br/>name + description de cada SKILL.md"]
     B --> C{"¿La tarea encaja con<br/>alguna description?"}
     C -->|"sí"| D["📖 read_file del<br/>SKILL.md completo"]
     D --> E["Sigue las instrucciones<br/>+ usa los recursos de la carpeta"]
     C -->|"no"| F["Responde sin skills<br/>(cero tokens gastados en ellas)"]
-"""
+    """
             ),
         }
     )
@@ -2344,7 +2348,7 @@ def _(mo):
             ),
             "🗺️ Arquitectura": mo.mermaid(
                 """
-flowchart LR
+    flowchart LR
     subgraph HOST["🏠 Host — este notebook"]
         AG["🤖 Agente DeepAgents"]
         CL1["🔌 Cliente MCP 1"]
@@ -2356,11 +2360,11 @@ flowchart LR
     CL2 <-->|"http / sse"| S2["🌐 servidor remoto<br/>(de cualquier fabricante)"]
     S1 --> T1["tools · resources · prompts"]
     S2 --> T2["tools · resources · prompts"]
-"""
+    """
             ),
             "🔁 Secuencia del protocolo": mo.mermaid(
                 """
-sequenceDiagram
+    sequenceDiagram
     participant C as 🔌 Cliente (notebook)
     participant S as 🧪 Servidor (laboratorio)
     C->>S: initialize (versión + capabilities)
@@ -2371,7 +2375,7 @@ sequenceDiagram
     Note over C: el agente ya "ve" las tools externas
     C->>S: tools/call consultar_glosario {termino: "mcp"}
     S-->>C: resultado (content blocks)
-"""
+    """
             ),
         }
     )
@@ -2727,13 +2731,13 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart TD
+    flowchart TD
     DIR["🎬 Director<br/>(agente principal)"] -->|"task('investigador', encargo)"| S1["🕵️ investigador<br/>contexto limpio propio"]
     DIR -->|"task(...)"| S2["✍️ tu próximo personaje"]
     S1 -->|"SOLO el resultado final"| DIR
     S2 -->|"SOLO el resultado final"| DIR
     DIR --> R["💬 Respuesta integrada<br/>al usuario"]
-"""
+    """
             ),
         }
     )
@@ -2945,13 +2949,13 @@ def _(mo):
             ),
             "🗺️ Diagrama": mo.mermaid(
                 """
-flowchart LR
+    flowchart LR
     T["🔧 Tool<br/>(generar_grafico...)"] -->|"escribe archivo"| A[("📁 ./artefactos/")]
     W["📝 write_file<br/>del agente"] -->|"escribe archivo"| A
     A --> C{"clasificar_artefacto<br/>(por extensión)"}
     C -->|"imagen · pdf · video<br/>audio · tabla · json..."| G["🖼️ Galería<br/>(histórico)"]
     C -->|"creados en el turno<br/>(snapshot diff)"| CH["💬 Chat inline"]
-"""
+    """
             ),
         }
     )
@@ -3268,11 +3272,11 @@ def _(mo):
         value='''from langchain.tools import tool
 
 
-@tool
-def mi_nueva_herramienta(pregunta: str) -> str:
+    @tool
+    def mi_nueva_herramienta(pregunta: str) -> str:
     """Describe aquí qué hace tu herramienta."""
     return f"Procesé: {pregunta}"
-''',
+    ''',
         label="Escribe tu herramienta aquí:",
         language="python",
     )
@@ -3313,7 +3317,7 @@ def _(herramienta_dinamica, herramientas_totales):
     # Reconstruir el grafo DeepAgents en cada edición sería costoso; el patrón
     # correcto (run_button + mo.state, como Skills/Reparto/MCP) queda como
     # ejercicio para el estudiante.
-    return (herramientas_agente,)
+    return
 
 
 @app.cell
